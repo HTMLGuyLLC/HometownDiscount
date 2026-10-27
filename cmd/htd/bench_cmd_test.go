@@ -1,0 +1,216 @@
+package main
+
+import (
+	"bytes"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/skills"
+)
+
+// benchRepo is a small repo with source and JSON files, so skill checks of
+// several kinds can be built from it.
+func benchRepo(t *testing.T) string {
+	t.Helper()
+	repo := newRepo(t)
+	os.WriteFile(filepath.Join(repo, "app.json"), []byte(`{"server": {"port": 8080}, "name": "demo"}`), 0o644)
+	if out, err := exec.Command("git", "-C", repo, "add", ".").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v %s", err, out)
+	}
+	return repo
+}
+
+// bench runs `htd bench` on a repo against a fake server.
+func bench(t *testing.T, srv *fakeServer, repo string, args ...string) (string, error) {
+	t.Helper()
+	var out bytes.Buffer
+	err := runBench(append([]string{"--url", srv.URL, "--repo", repo}, args...), &out, &out)
+	return out.String(), err
+}
+
+// answersFor is a model that knows the right answer to every skill check
+// built from repo, or answers "wrong" when `right` is false.
+func answersFor(t *testing.T, repo string, right bool) (func(int, chatRequest) fakeReply, int) {
+	t.Helper()
+	tasks, err := skills.Generate(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) == 0 {
+		t.Fatal("the fixture repo yields no skill checks")
+	}
+	byPrompt := map[string]string{}
+	for _, task := range tasks {
+		byPrompt[task.Prompt] = task.Answer
+	}
+	return func(_ int, r chatRequest) fakeReply {
+		if !right {
+			return fakeReply{Content: "wrong", Tokens: 2}
+		}
+		return fakeReply{Content: byPrompt[r.task()], Tokens: 10}
+	}, len(tasks)
+}
+
+// Skill checks built from the user's own repo are run on the model, graded
+// exactly, and stored as skill results with their size and timing. Running
+// again does only what's left.
+func TestBenchGradesAndStoresSkillChecks(t *testing.T) {
+	home, _ := hermetic(t)
+	repo := benchRepo(t)
+	chat, total := answersFor(t, repo, true)
+	srv := newFakeServer(t, modelList("tiny-q4"), chat)
+
+	out, err := bench(t, srv, repo)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+
+	runs := storedRuns(t, home)
+	if len(runs) != total {
+		t.Fatalf("want all %d checks stored, got %d:\n%s", total, len(runs), out)
+	}
+	for _, r := range runs {
+		if !r.Graded || !r.Pass || !strings.HasPrefix(r.Type, skills.TypePrefix) || r.Tier == "" || r.Turns != 1 || r.Seconds <= 0 || r.Reference != "" {
+			t.Errorf("a correct answer should be a graded skill pass, got %+v", r)
+		}
+	}
+	for _, want := range []string{"Skill checks from " + filepath.Base(repo) + " on tiny-q4", "checks, ", " passed.", "Run `htd card`"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+
+	out, err = bench(t, srv, repo)
+	if err != nil || !strings.Contains(out, "No new skill checks for this setup") {
+		t.Errorf("a second run has nothing left: %v\n%s", err, out)
+	}
+	if srv.chatCount() != total {
+		t.Errorf("the second run must not call the model again: %d calls for %d checks", srv.chatCount(), total)
+	}
+}
+
+// A wrong answer is a recorded fail, and the answer is saved for review.
+func TestBenchWrongAnswersFail(t *testing.T) {
+	home, _ := hermetic(t)
+	repo := benchRepo(t)
+	chat, total := answersFor(t, repo, false)
+	srv := newFakeServer(t, modelList("tiny-q4"), chat)
+
+	out, err := bench(t, srv, repo)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+
+	runs := storedRuns(t, home)
+	if len(runs) == 0 || len(runs) > total {
+		t.Fatalf("got %d runs for %d checks:\n%s", len(runs), total, out)
+	}
+	for _, r := range runs {
+		if !r.Graded || r.Pass || r.Reason != "wrong answer" {
+			t.Errorf("want a graded wrong-answer fail, got %+v", r)
+		}
+	}
+	if !strings.Contains(out, "0 passed.") {
+		t.Errorf("output:\n%s", out)
+	}
+	if !exists(filepath.Join(home, "answers")) {
+		t.Error("answers should be saved for review")
+	}
+}
+
+// A check bigger than the context the server gives the model is skipped, not
+// failed: that's a server setting, not skill.
+func TestBenchSkipsChecksThatDoNotFitTheContext(t *testing.T) {
+	home, _ := hermetic(t)
+	repo := benchRepo(t)
+	chat, _ := answersFor(t, repo, true)
+	models := []map[string]any{{"id": "tiny-q4", "object": "model", "n_ctx": 500}}
+	srv := newFakeServer(t, models, chat)
+
+	out, err := bench(t, srv, repo)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+
+	if srv.chatCount() != 0 || len(storedRuns(t, home)) != 0 {
+		t.Errorf("nothing should run: %d model calls, %d runs", srv.chatCount(), len(storedRuns(t, home)))
+	}
+	if !strings.Contains(out, "too long for the server's context") || !strings.Contains(out, "0 checks, 0 passed.") {
+		t.Errorf("output:\n%s", out)
+	}
+}
+
+// --max stops after that many checks.
+func TestBenchMax(t *testing.T) {
+	home, _ := hermetic(t)
+	repo := benchRepo(t)
+	chat, total := answersFor(t, repo, true)
+	if total < 2 {
+		t.Skip("the fixture repo yields too few checks")
+	}
+	srv := newFakeServer(t, modelList("tiny-q4"), chat)
+
+	out, err := bench(t, srv, repo, "--max", "1")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if n := len(storedRuns(t, home)); n != 1 || !strings.Contains(out, "1 checks, 1 passed.") {
+		t.Errorf("--max 1 ran %d checks:\n%s", n, out)
+	}
+	if strings.Contains(out, "Every skill check this repo can make has run") {
+		t.Errorf("checks remain, so the run isn't complete:\n%s", out)
+	}
+}
+
+// The command fails clearly when the server is down or the folder isn't a repo.
+func TestBenchErrors(t *testing.T) {
+	hermetic(t)
+	repo := benchRepo(t)
+	var out bytes.Buffer
+
+	if err := runBench([]string{"--url", closedServerURL(), "--repo", repo}, &out, &out); err == nil || !strings.Contains(err.Error(), "cannot reach") {
+		t.Errorf("unreachable server: %v", err)
+	}
+	srv := newFakeServer(t, modelList("tiny-q4"), healthyModel)
+	if _, err := bench(t, srv, t.TempDir()); err == nil {
+		t.Error("a folder that isn't a git repo should fail")
+	}
+	if _, err := bench(t, srv, repo, "--model", "nope"); err == nil || !strings.Contains(err.Error(), `doesn't serve "nope"`) {
+		t.Errorf("unknown model: %v", err)
+	}
+}
+
+// The quant written in config.toml stands in for one the server can't report.
+func TestWithConfigQuantAndRemoteAllowed(t *testing.T) {
+	home, _ := hermetic(t)
+	os.WriteFile(filepath.Join(home, "config.toml"), []byte("[[local]]\nurl = \"http://127.0.0.1:1\"\nmodel = \"mystery\"\nquant = \"Q4_K_M\"\nallow_remote = true\n"), 0o600)
+	srv := newFakeServer(t, modelList("mystery"), healthyModel)
+
+	_, rung, _, err := probeRung(t.Context(), srv.URL, "mystery", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rung.Quant != "quant unknown" {
+		t.Fatalf("the server can't tell the quant: %+v", rung)
+	}
+	cfg := savedConfig(t, home)
+	if got := withConfigQuant(rung, cfg).Quant; got != "Q4_K_M" {
+		t.Errorf("withConfigQuant = %q, want the configured Q4_K_M", got)
+	}
+	if !remoteAllowed(cfg) {
+		t.Error("allow_remote = true should be honored")
+	}
+	other := rung
+	other.Model = "other"
+	if got := withConfigQuant(other, cfg).Quant; got != "quant unknown" {
+		t.Errorf("another model keeps its own quant, got %q", got)
+	}
+	known := rung
+	known.Quant = "8-bit"
+	if got := withConfigQuant(known, cfg).Quant; got != "8-bit" {
+		t.Errorf("a quant the server reported is not overridden, got %q", got)
+	}
+}
