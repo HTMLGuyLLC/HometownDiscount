@@ -114,7 +114,9 @@ type spawnInfo struct {
 	Background  bool
 }
 
-// Scan reads all transcripts under root and keeps what happened at or after since.
+// Scan reads all transcripts under root and keeps what happened at or after
+// since. A missing root is no history yet (a fresh install, or a machine that
+// doesn't run Claude Code), not an error.
 func Scan(root string, since time.Time) (*History, error) {
 	h := &History{}
 	spawns := map[string]spawnInfo{} // agentId -> parent's view of the spawn
@@ -122,7 +124,7 @@ func Scan(root string, since time.Time) (*History, error) {
 
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			if errors.Is(err, fs.ErrPermission) {
+			if errors.Is(err, fs.ErrPermission) || (path == root && errors.Is(err, fs.ErrNotExist)) {
 				return nil
 			}
 			return err

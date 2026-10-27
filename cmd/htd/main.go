@@ -106,6 +106,10 @@ func runMap(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("read transcripts in %s: %w", *root, err)
 	}
+	if _, err := os.Stat(*root); os.IsNotExist(err) && !*asJSON {
+		fmt.Fprintf(stdout, "No Claude Code transcripts found in %s. Once you've used Claude Code, run `htd map` again.\n", *root)
+		return nil
+	}
 	m := spendmap.Build(h, prices, since, *days)
 	if *asJSON {
 		enc := json.NewEncoder(stdout)

@@ -48,3 +48,11 @@ func TestScan(t *testing.T) {
 		t.Errorf("main usage = %+v", u)
 	}
 }
+
+// No transcripts folder is no history yet, not an error.
+func TestScanMissingRoot(t *testing.T) {
+	h, err := Scan(t.TempDir()+"/nothing-here", time.Now().AddDate(0, 0, -30))
+	if err != nil || len(h.Jobs) != 0 || h.Files != 0 {
+		t.Errorf("Scan of a missing folder = %+v, %v; want empty history, no error", h, err)
+	}
+}

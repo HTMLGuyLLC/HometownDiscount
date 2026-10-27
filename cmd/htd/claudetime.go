@@ -39,9 +39,15 @@ func claudeTimes(dir, root string, h *history.History, days int, want string, w 
 		fmt.Fprintln(w)
 	}
 	scanned, err := history.Scan(root, time.Now().AddDate(0, 0, -days))
-	if err != nil {
-		c, _ := speed.Load(dir) // older times beat none
-		return c
+	if err != nil || len(scanned.Reads) == 0 {
+		// Nothing new to measure: the same model's older times beat none.
+		// Another model's would be wrong for this one.
+		if c, ok := speed.Load(dir); ok && c.Model == model {
+			return c
+		}
+		if err != nil {
+			return speed.Claude{Model: model}
+		}
 	}
 	c := speed.Estimate(scanned.Reads, days, model)
 	_ = speed.Save(dir, c)

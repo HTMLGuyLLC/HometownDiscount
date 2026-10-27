@@ -69,6 +69,10 @@ func runSetup(args []string, stdin io.Reader, stdout io.Writer) error {
 	}
 	fmt.Fprintln(stdout, "2/2 Hometown model ..... any local server with an OpenAI-compatible API (MTPLX, Splish, Ollama, LM Studio, llama.cpp, vLLM)")
 	url := ask("    Server URL? (or \"none\")", def)
+	if url == "none" && len(cfg.Local) > 0 {
+		cfg.Local = nil // "none" means no local model, even one set up before
+		fmt.Fprintln(stdout, "    Removed the local model: htd won't use one until you run `htd setup` again.")
+	}
 	if url != "none" {
 		allowRemote := false
 		if servers.IsRemote(url) {
@@ -120,8 +124,16 @@ func configureModel(ctx context.Context, url string, allowRemote bool, ask func(
 		for i, mm := range s.Models {
 			fmt.Fprintf(stdout, "    %d) %s\n", i+1, mm.ID)
 		}
-		if n, err := strconv.Atoi(ask("    Which model?", "1")); err == nil && n >= 1 && n <= len(s.Models) {
-			mod = s.Models[n-1]
+		for tries := 1; ; tries++ {
+			if n, err := strconv.Atoi(ask("    Which model?", "1")); err == nil && n >= 1 && n <= len(s.Models) {
+				mod = s.Models[n-1]
+				break
+			}
+			if tries == 3 {
+				fmt.Fprintln(stdout, "    No model picked; run `htd setup` again to choose one.")
+				return
+			}
+			fmt.Fprintf(stdout, "    Pick a number from 1 to %d.\n", len(s.Models))
 		}
 	}
 	fmt.Fprintf(stdout, "    found %s · %s · %s\n", mod.ID, quantLabel(mod.Quant), contextLabel(mod))
