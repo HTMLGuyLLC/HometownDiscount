@@ -48,7 +48,7 @@ func runProbe(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("%s: %w", m.ID, servers.ErrCloudModel)
 	}
 	if m.ContextLimited() {
-		fmt.Fprintf(stdout, "Warning: %s runs with %d tokens of context but supports %d. Raise it in your server's settings.\n", m.ID, m.Context, m.MaxContext)
+		fmt.Fprintf(stdout, "Warning: %s runs with %d tokens of context but supports %d. Raise it to at least %d in your server's settings.\n", m.ID, m.Context, m.MaxContext, min(servers.WantContext, m.MaxContext))
 	}
 
 	fmt.Fprintf(stdout, "\nTesting %s...\n", m.ID)

@@ -13,6 +13,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/localhttp"
 )
 
 // Server flavors.
@@ -62,11 +64,16 @@ type Model struct {
 	Cloud         bool // e.g. Ollama ":cloud" models that run remotely: must be refused
 }
 
-// ContextLimited reports whether the server will use less context than the
-// model supports, e.g. Ollama at its 4096 default for a 262144-token model.
-// The caller should warn and say how to raise it.
+// WantContext is about what htd's biggest skill check needs: 256 KB of
+// input plus the instructions.
+const WantContext = 96 << 10
+
+// ContextLimited reports whether the server gives a model less context than
+// htd's biggest checks need while the model supports more, e.g. Ollama at
+// its 4096 default for a 262144-token model. The caller should warn and say
+// how to raise it. More than htd needs is fine, whatever the model's maximum.
 func (m Model) ContextLimited() bool {
-	return m.Context > 0 && m.MaxContext > m.Context
+	return m.Context > 0 && m.Context < WantContext && m.MaxContext > m.Context
 }
 
 // Find returns the model with this id. A bare Ollama name matches ":latest".
@@ -167,9 +174,9 @@ func isLocalHost(host string) bool {
 		return true
 	}
 	if ip := net.ParseIP(h); ip != nil {
-		return localIP(ip)
+		return localhttp.LocalIP(ip)
 	}
-	if h == "" || (strings.Contains(h, ".") && !strings.HasSuffix(h, ".local")) {
+	if !localhttp.LocalName(h) {
 		return false
 	}
 	ips, err := lookupIP(h)
@@ -177,15 +184,11 @@ func isLocalHost(host string) bool {
 		return false
 	}
 	for _, ip := range ips {
-		if !localIP(ip) {
+		if !localhttp.LocalIP(ip) {
 			return false
 		}
 	}
 	return true
-}
-
-func localIP(ip net.IP) bool {
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()
 }
 
 // lookupIP resolves a host name with a short timeout. Tests swap it.

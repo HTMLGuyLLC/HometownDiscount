@@ -3,7 +3,10 @@
 package sandbox
 
 import (
+	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -19,4 +22,14 @@ func killGroup(cmd *exec.Cmd) {
 	if cmd.Process != nil {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
+}
+
+// userProcs counts the processes the user runs now, or 0 when ps can't say
+// (then no process limit is set).
+func userProcs() int {
+	out, err := exec.Command("ps", "-U", strconv.Itoa(os.Getuid()), "-o", "pid=").Output()
+	if err != nil {
+		return 0
+	}
+	return strings.Count(string(out), "\n")
 }

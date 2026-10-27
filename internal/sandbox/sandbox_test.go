@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -154,5 +155,73 @@ func TestScratchLimit(t *testing.T) {
 	}
 	if r, _ := Run(context.Background(), ws, tmp, `echo ok > "$TMPDIR/a" && cat "$TMPDIR/a"`, 10*time.Second); strings.TrimSpace(r.Stdout) != "ok" {
 		t.Errorf("the next command should work normally: %+v", r)
+	}
+}
+
+func TestParseEtime(t *testing.T) {
+	for s, want := range map[string]time.Duration{
+		"00:05":       5 * time.Second,
+		"01:02":       62 * time.Second,
+		"01:02:03":    3723 * time.Second,
+		"2-00:00:01":  48*time.Hour + time.Second,
+		"12:34:56:78": -1,
+		"x:01":        -1,
+	} {
+		got, ok := parseEtime(s)
+		if (want < 0) == ok || (ok && got != want) {
+			t.Errorf("parseEtime(%q) = %v, %v; want %v", s, got, ok, want)
+		}
+	}
+}
+
+// A command can't start more than maxProcs processes on top of the user's
+// own, so a fork bomb can't use up the user's whole allowance.
+func TestProcessLimit(t *testing.T) {
+	if err := Available(); err != nil {
+		t.Skip(err)
+	}
+	base := t.TempDir()
+	r, err := Run(context.Background(), base, filepath.Join(base, "tmp"), "ulimit -u 2>/dev/null || ulimit -p", 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(r.Stdout))
+	if err != nil || n > userProcs()+maxProcs+100 {
+		t.Errorf("want a process limit near %d, got %q", userProcs()+maxProcs, r.Stdout)
+	}
+}
+
+// A process that leaves the command's process group, which a timeout kills,
+// is blocked on macOS or stopped with the command everywhere.
+func TestNoProcessOutlivesTheCommand(t *testing.T) {
+	if err := Available(); err != nil {
+		t.Skip(err)
+	}
+	base := t.TempDir()
+	run := func(cmd string) Result {
+		t.Helper()
+		r, err := Run(context.Background(), base, filepath.Join(base, "tmp"), cmd, 20*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	if r := run(`python3 -c 'import os; os.posix_spawn'`); r.ExitCode != 0 {
+		t.Skip("no python3 with posix_spawn in the sandbox")
+	}
+	if runtime.GOOS == "darwin" {
+		for _, call := range []string{"os.setsid()", "os.setpgid(0, 0)"} {
+			if r := run("python3 -c 'import os; " + call + "'"); r.ExitCode == 0 {
+				t.Errorf("%s should be blocked", call)
+			}
+		}
+	}
+	// posix_spawn's setsid flag gets past the profile on macOS; the process
+	// must still be gone once the command returns.
+	run(`python3 -c "import os; os.posix_spawn('/bin/sleep', ['sleep', '97.31'], os.environ, setsid=True)"`)
+	time.Sleep(300 * time.Millisecond)
+	if out, _ := exec.Command("pgrep", "-f", "sleep 97.31").Output(); len(strings.TrimSpace(string(out))) > 0 {
+		exec.Command("pkill", "-f", "sleep 97.31").Run()
+		t.Errorf("a detached process outlived the command: pid %s", out)
 	}
 }

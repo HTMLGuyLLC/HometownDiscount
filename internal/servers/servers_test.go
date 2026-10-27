@@ -547,3 +547,23 @@ func TestProbeRemoteFlag(t *testing.T) {
 		t.Error("a LAN address must not be flagged remote")
 	}
 }
+
+// Context beyond what htd needs isn't worth a warning, even when the model
+// could take more.
+func TestContextLimited(t *testing.T) {
+	for _, c := range []struct {
+		ctx, max int
+		want     bool
+	}{
+		{4096, 262144, true},
+		{65536, 262144, true},
+		{131072, 262144, false},
+		{WantContext, 262144, false},
+		{32768, 32768, false}, // the model's own limit: nothing to raise
+		{0, 262144, false},    // unknown
+	} {
+		if got := (Model{Context: c.ctx, MaxContext: c.max}).ContextLimited(); got != c.want {
+			t.Errorf("context %d of %d: limited = %v, want %v", c.ctx, c.max, got, c.want)
+		}
+	}
+}

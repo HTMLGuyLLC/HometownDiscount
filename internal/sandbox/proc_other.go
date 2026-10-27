@@ -8,3 +8,4 @@ import "os/exec"
 // never get this far.
 func isolate(*exec.Cmd)   {}
 func killGroup(*exec.Cmd) {}
+func userProcs() int      { return 0 }

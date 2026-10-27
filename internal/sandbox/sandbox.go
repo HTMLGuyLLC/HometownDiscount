@@ -42,6 +42,10 @@ const maxFileKB = 100 * 1024
 // disk. Tests lower it.
 var maxScratchBytes int64 = 512 << 20
 
+// maxProcs is how many processes a command may run at once on top of the
+// user's own. Pipelines, find -exec and xargs -P stay far below it.
+const maxProcs = 256
+
 // scratchFull is the note a stopped command gets.
 const scratchFull = "[stopped: the scratch folder passed its size limit and was emptied]"
 
@@ -104,9 +108,17 @@ func Run(ctx context.Context, dir, tmp, command string, timeout time.Duration) (
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Limit file size and CPU time inside the shell, then run the command.
+	// Limit file size, CPU time and process count inside the shell, then run
+	// the command. The process limit counts all of the user's processes, so
+	// it's set a fixed number above what's running now: a fork bomb stops
+	// there instead of using up the user's whole allowance. bash spells it
+	// -u, dash -p.
 	secs := int(timeout.Seconds()) + 1
-	script := fmt.Sprintf("ulimit -f %d 2>/dev/null; ulimit -t %d 2>/dev/null; %s", maxFileKB*2, secs, command)
+	limits := fmt.Sprintf("ulimit -f %d 2>/dev/null; ulimit -t %d 2>/dev/null; ", maxFileKB*2, secs)
+	if n := userProcs(); n > 0 {
+		limits += fmt.Sprintf("ulimit -u %[1]d 2>/dev/null || ulimit -p %[1]d 2>/dev/null; ", n+maxProcs)
+	}
+	script := limits + command
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
@@ -128,9 +140,11 @@ func Run(ctx context.Context, dir, tmp, command string, timeout time.Duration) (
 	if err := cmd.Start(); err != nil {
 		return Result{}, err
 	}
+	started := time.Now()
 	full := watchScratch(ctx, tmp, cmd)
 	runErr := cmd.Wait()
-	killGroup(cmd) // leftovers from `cmd &`
+	killGroup(cmd)                  // leftovers from `cmd &`
+	killDetached(dir, tmp, started) // leftovers that left the group
 
 	res := Result{Stdout: stdout.String(), Stderr: stderr.String()}
 	if full() {
@@ -263,6 +277,7 @@ func seatbeltProfile(dir, tmp string) string {
 		`(deny signal (target others))`,        // can't kill or signal other processes
 		`(deny ipc-posix-shm* ipc-sysv*)`,      // no shared memory or semaphores with other processes
 		`(deny iokit-open)`,                    // no hardware devices
+		`(deny syscall-unix (syscall-number SYS_setsid SYS_setpgid))`, // can't leave the process group a timeout kills
 		`(deny process-exec (literal "/usr/bin/open") (literal "/usr/bin/osascript") (literal "/usr/bin/pbcopy") (literal "/usr/bin/pbpaste"))`,
 		`(deny file-write*)`,
 		`(allow file-write* (literal "/dev/null") (literal "/dev/dtracehelper"))`,
