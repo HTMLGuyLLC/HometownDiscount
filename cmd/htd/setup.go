@@ -88,7 +88,7 @@ func runSetup(args []string, stdin io.Reader, stdout io.Writer) error {
 	fmt.Fprintf(stdout, "\nSaved %s.\n", config.Path(dir))
 	if len(cfg.Local) > 0 {
 		fmt.Fprintln(stdout, "Next, from inside one of your repos:")
-		fmt.Fprintln(stdout, "  htd bench    skill checks on your code (minutes to an hour)")
+		fmt.Fprintln(stdout, "  htd bench    skill checks on your code (minutes; a few hours for a big repo)")
 		fmt.Fprintln(stdout, "  htd card     what your model has earned")
 		fmt.Fprintln(stdout, "  claude mcp add htd -- htd mcp    let Claude hand it proven work")
 		fmt.Fprintln(stdout, "  htd replay   replays of your real past jobs (slow: run it overnight)")

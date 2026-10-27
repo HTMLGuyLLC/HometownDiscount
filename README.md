@@ -39,7 +39,7 @@ Then:
 | --- | --- | --- |
 | 1. Setup wizard: spend map, then your local model (URL + model name, any OpenAI-compatible server) | `htd setup` | 1 minute |
 | 2. Where your subagent spend goes | `htd map` | seconds |
-| 3. Skill checks on your code (run inside a repo) | `htd bench` | minutes to an hour |
+| 3. Skill checks on your code (run inside a repo) | `htd bench` | minutes; a few hours for a big repo |
 | 4. Replays of your real past jobs | `htd replay` | minutes per job; run it overnight |
 | 5. What the model has earned | `htd card` | instant |
 | 6. Let Claude hand it proven work | `claude mcp add htd -- htd mcp` | once |
