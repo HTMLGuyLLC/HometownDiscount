@@ -35,10 +35,11 @@ type Sample struct {
 // Claude is how long one Claude model typically takes to answer after
 // reading one file, by input size, from the user's own transcripts.
 type Claude struct {
-	At     time.Time         `json:"at"`
-	Days   int               `json:"days"`
-	Model  string            `json:"model"` // "" when no model was known: every model's times
-	BySize map[string]Sample `json:"by_size"`
+	Version int               `json:"version"` // cacheVersion when saved; older saves are measured again
+	At      time.Time         `json:"at"`
+	Days    int               `json:"days"`
+	Model   string            `json:"model"` // "" when no model was known: every model's times
+	BySize  map[string]Sample `json:"by_size"`
 	// RideAlong is the median number of later requests that carried a small
 	// file Claude read (an upper bound: compaction can drop it sooner). It
 	// prices what keeping a file out of Claude's context saves.
@@ -105,6 +106,10 @@ func Median(v []float64) float64 {
 	return (s[n/2-1] + s[n/2]) / 2
 }
 
+// cacheVersion changes when the saved fields change, so a save from an older
+// htd is measured again instead of being read with fields missing.
+const cacheVersion = 2
+
 // cachePath is where Claude's times are kept between runs.
 func cachePath(dir string) string { return filepath.Join(dir, "cache", "claude-speed.json") }
 
@@ -112,7 +117,7 @@ func cachePath(dir string) string { return filepath.Join(dir, "cache", "claude-s
 func Load(dir string) (Claude, bool) {
 	var c Claude
 	b, err := os.ReadFile(cachePath(dir))
-	if err != nil || json.Unmarshal(b, &c) != nil || c.BySize == nil {
+	if err != nil || json.Unmarshal(b, &c) != nil || c.BySize == nil || c.Version != cacheVersion {
 		return Claude{}, false
 	}
 	return c, true
@@ -123,6 +128,7 @@ func Save(dir string, c Claude) error {
 	if err := os.MkdirAll(filepath.Dir(cachePath(dir)), 0o700); err != nil {
 		return err
 	}
+	c.Version = cacheVersion
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err

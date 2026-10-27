@@ -1,6 +1,7 @@
 package speed
 
 import (
+	"os"
 	"testing"
 
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/config"
@@ -113,6 +114,11 @@ func TestSaveLoad(t *testing.T) {
 	got, ok := Load(dir)
 	if !ok || got.BySize["small"].Seconds != 3 || got.Days != 30 {
 		t.Errorf("loaded %+v", got)
+	}
+	// A save from an older htd lacks newer fields: it's measured again.
+	os.WriteFile(cachePath(dir), []byte(`{"at":"2026-10-27T10:00:00Z","days":30,"by_size":{"small":{"seconds":3,"n":10}}}`), 0o600)
+	if _, ok := Load(dir); ok {
+		t.Error("an old-version save should not be used")
 	}
 }
 
