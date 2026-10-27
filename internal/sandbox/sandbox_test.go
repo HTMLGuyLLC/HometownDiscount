@@ -44,8 +44,21 @@ func TestCanaries(t *testing.T) {
 	if r := run("cat " + filepath.Join(other, "secret.txt")); r.ExitCode == 0 || strings.Contains(r.Stdout, "token") {
 		t.Errorf("read another temp folder: %+v", r)
 	}
-	if r := run("ls " + home); r.ExitCode == 0 {
-		t.Errorf("listed the home folder: %+v", r)
+	// macOS denies the home folder; Linux mounts an empty folder over it.
+	// Either way, nothing in the real one may show.
+	if r := run("ls -A " + home); r.ExitCode == 0 {
+		real := map[string]bool{}
+		if entries, err := os.ReadDir(home); err == nil {
+			for _, e := range entries {
+				real[e.Name()] = true
+			}
+		}
+		for _, name := range strings.Fields(r.Stdout) {
+			if real[name] {
+				t.Errorf("listed the home folder: %q is visible", name)
+				break
+			}
+		}
 	}
 	for _, p := range []string{"/private/var/tmp", "/private/var/log", "/Library/Preferences"} {
 		if _, err := os.Stat(p); err == nil {
