@@ -73,6 +73,21 @@ type ReadSample struct {
 	Seconds float64
 	Model   string
 	Time    time.Time
+	// Later counts the requests after the read in the same conversation:
+	// each one carried the file again (from the cache) until the end or a
+	// compaction, so it's an upper bound.
+	Later int
+}
+
+// countLater sets each sample's Later from a conversation's requests.
+func countLater(samples []ReadSample, reqs []Request) {
+	for i := range samples {
+		for _, r := range reqs {
+			if r.Time.After(samples[i].Time) {
+				samples[i].Later++
+			}
+		}
+	}
 }
 
 // History is everything read from the transcripts in a time window.
@@ -366,6 +381,7 @@ func readMain(path string, since time.Time, h *History, spawns map[string]spawnI
 		}
 	}
 	timer.flush()
+	countLater(timer.samples, reqs.list)
 	h.addReads(timer.samples, since)
 	return err
 }
@@ -428,6 +444,7 @@ func readSubagent(path, root string) (*Job, []ReadSample, error) {
 		return nil, nil, err
 	}
 	timer.flush()
+	countLater(timer.samples, reqs.list)
 	if job.AgentID == "" {
 		job.AgentID = strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), "agent-"), ".jsonl")
 	}

@@ -121,6 +121,8 @@ Claude's side of the comparison costs nothing: for skill checks, htd times how l
 - **not good enough**: stopped early, because it clearly can't reach the bar;
 - **hint**: 200 jobs without proof.
 
+The `ask_local` line counts tasks answered locally and the file contents kept out of Claude's context, with what that's worth at your Claude model's API prices: one cache write plus a cache read on each later turn the file would have ridden along for (typical for your transcripts). On a Pro or Max plan that's usage headroom, not dollars.
+
 Skill checks have exact answers and a fixed bar of 85%. Replay results are a first look: their bar is a stated default (86%) for now. Run `htd bench` again after changing your server or model settings.
 
 ## Good to know

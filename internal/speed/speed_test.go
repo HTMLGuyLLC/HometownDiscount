@@ -122,7 +122,7 @@ func TestSaveLoad(t *testing.T) {
 func TestEstimatePerModel(t *testing.T) {
 	var reads []history.ReadSample
 	for i := 0; i < 6; i++ {
-		reads = append(reads, history.ReadSample{Lines: 50, Seconds: 10, Model: "claude-opus-5-5"})
+		reads = append(reads, history.ReadSample{Lines: 50, Seconds: 10, Model: "claude-opus-5-5", Later: 40 + i})
 	}
 	for i := 0; i < 10; i++ {
 		reads = append(reads,
@@ -135,6 +135,9 @@ func TestEstimatePerModel(t *testing.T) {
 	}
 	if s := c.BySize["medium"]; s.Seconds != 10 || s.From != "small" {
 		t.Errorf("medium should borrow Opus 5.5's small time, not Opus 5's: %+v", s)
+	}
+	if c.RideAlong != 42.5 {
+		t.Errorf("ride-along = %v, want Opus 5.5's own median (42.5)", c.RideAlong)
 	}
 	h := Estimate(reads, 30, "claude-haiku-5-5")
 	if s := h.BySize["small"]; s.From != "all models" || s.N != 16 {

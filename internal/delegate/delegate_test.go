@@ -133,7 +133,7 @@ func TestCall(t *testing.T) {
 
 func TestDescriptionFollowsEvidence(t *testing.T) {
 	h, _ := handler(t, Gate{})
-	if d := h.Tools()[0].Description; !strings.Contains(d, "hasn't proven any skill") {
+	if d := h.Tools()[0].Description; !strings.Contains(d, "Nothing is proven yet") {
 		t.Errorf("description = %q", d)
 	}
 	h.Gate = Gate{"json": {"small": "", "medium": "", "large": ""}}
@@ -151,5 +151,18 @@ func TestBadShape(t *testing.T) {
 	}
 	if badShape("files", strings.Repeat("x", MaxAnswer+1)) == "" {
 		t.Error("answers over the cap must be rejected")
+	}
+}
+
+// Skills with the same range are listed once, since Claude carries the list
+// on every request.
+func TestSummaryGroupsSkills(t *testing.T) {
+	g := Gate{
+		"json":   {"small": ""},
+		"lookup": {"small": "", "medium": ""},
+		"list":   {"small": ""},
+	}
+	if got, want := g.Summary(), "json, list (files up to 200 lines); lookup (up to 1,000 lines)"; got != want {
+		t.Errorf("summary = %q, want %q", got, want)
 	}
 }

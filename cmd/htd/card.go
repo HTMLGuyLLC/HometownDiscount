@@ -14,6 +14,8 @@ import (
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/config"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/delegate"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/history"
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/pricing"
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/speed"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/store"
 )
 
@@ -46,24 +48,33 @@ func runCard(args []string, stdout, stderr io.Writer) error {
 		}
 	}
 	rows := card.Build(runs, labels)
+	claude, _ := speed.Load(dir)
 	if len(rows) > 0 {
-		rows = card.WithSpeed(rows, cfg.Speed, claudeTimes(dir, history.DefaultRoot(), nil, 30, cfg.Speed.ClaudeModel, stdout))
+		claude = claudeTimes(dir, history.DefaultRoot(), nil, 30, cfg.Speed.ClaudeModel, stdout)
+		rows = card.WithSpeed(rows, cfg.Speed, claude)
 	}
 	if *details {
 		card.Render(stdout, rows)
 		return nil
 	}
 	card.Headline(stdout, rows)
-	delegationSummary(stdout, filepath.Join(dir, "delegations.jsonl"))
+	prices, _ := pricing.Default()
+	delegationSummary(stdout, filepath.Join(dir, "delegations.jsonl"), claude, prices)
 	if len(rows) > 0 {
 		fmt.Fprintln(stdout, "Every number behind this: `htd card --details`.")
 	}
 	return nil
 }
 
-// delegationSummary reports ask_local use: tasks answered locally and the
-// file contents that never entered Claude's context (about 4 bytes a token).
-func delegationSummary(w io.Writer, path string) {
+// answerGuess is the bytes an answer took before answers were logged.
+const answerGuess = 600
+
+// delegationSummary reports ask_local use so far: tasks answered locally,
+// the file contents kept out of Claude's context (about 4 bytes a token, net
+// of the answer that went back), and what that's worth at API prices. A file
+// Claude reads is written to its cache once and re-read on each later turn,
+// typically RideAlong turns in the user's own transcripts.
+func delegationSummary(w io.Writer, path string, claude speed.Claude, prices *pricing.Table) {
 	f, err := os.Open(path)
 	if err != nil {
 		return
@@ -79,7 +90,11 @@ func delegationSummary(w io.Writer, path string) {
 		switch d.Outcome {
 		case "answered":
 			answered++
-			bytes += d.Bytes
+			back := d.AnswerBytes
+			if back == 0 {
+				back = answerGuess
+			}
+			bytes += max(0, d.Bytes-back)
 		case "refused":
 			refused++
 		}
@@ -91,8 +106,17 @@ func delegationSummary(w io.Writer, path string) {
 	if answered == 1 {
 		tasks = "task"
 	}
-	fmt.Fprintf(w, "ask_local: %d %s answered locally, %d refused (not proven) · about %s tokens of file contents kept out of Claude's context\n\n",
-		answered, tasks, refused, commas(bytes/4))
+	line := fmt.Sprintf("ask_local: %d %s answered locally, %d refused · about %s tokens kept out of Claude's context", answered, tasks, refused, commas(bytes/4))
+	if tokens := bytes / 4; tokens > 0 && prices != nil && claude.Model != "" {
+		// Priced per 1,000 tokens and scaled, so the total never trips a
+		// model's long-prompt price, which applies to single requests.
+		unit := pricing.Usage{CacheWrite1h: 1000, CacheRead: int64(1000 * claude.RideAlong)}
+		if per1k, ok := prices.Cost(claude.Model, unit); ok {
+			line += fmt.Sprintf(" · worth about $%.2f at %s API prices", per1k*float64(tokens)/1000, pricing.Display(claude.Model))
+		}
+	}
+	fmt.Fprintln(w, line)
+	fmt.Fprintln(w)
 }
 
 func commas(n int) string {

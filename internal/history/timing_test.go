@@ -48,8 +48,8 @@ func TestReadTimings(t *testing.T) {
 	if r := byLines[3]; r.Seconds != 4 || r.Model != "claude-opus-5-5" {
 		t.Errorf("main read = %+v, want 4s (to the end of Claude's next message) on opus 5.5", r)
 	}
-	if r := byLines[2]; r.Seconds != 60 {
-		t.Errorf("subagent read = %+v, want 60s", r)
+	if r := byLines[2]; r.Seconds != 60 || r.Later != 1 {
+		t.Errorf("subagent read = %+v, want 60s, carried by 1 later request", r)
 	}
 	if len(h.Jobs) != 1 || h.Jobs[0].Duration() != 63*time.Second {
 		t.Errorf("job duration = %v, want 63s", h.Jobs[0].Duration())

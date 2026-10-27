@@ -39,6 +39,10 @@ type Claude struct {
 	Days   int               `json:"days"`
 	Model  string            `json:"model"` // "" when no model was known: every model's times
 	BySize map[string]Sample `json:"by_size"`
+	// RideAlong is the median number of later requests that carried a small
+	// file Claude read (an upper bound: compaction can drop it sooner). It
+	// prices what keeping a file out of Claude's context saves.
+	RideAlong float64 `json:"ride_along"`
 }
 
 // Estimate builds a Claude model's times from read samples. A size with too
@@ -47,17 +51,30 @@ type Claude struct {
 func Estimate(reads []history.ReadSample, days int, model string) Claude {
 	model = pricing.Normalize(model)
 	mine, all := map[string][]float64{}, map[string][]float64{}
+	var mineLater, allLater []float64
 	for _, r := range reads {
 		size := skills.SizeOf(r.Lines)
 		if size == "" || r.Seconds <= 0 {
 			continue
 		}
+		own := model == "" || pricing.Normalize(r.Model) == model
 		all[size] = append(all[size], r.Seconds)
-		if model == "" || pricing.Normalize(r.Model) == model {
+		if own {
 			mine[size] = append(mine[size], r.Seconds)
+		}
+		if size == skills.Small {
+			allLater = append(allLater, float64(r.Later))
+			if own {
+				mineLater = append(mineLater, float64(r.Later))
+			}
 		}
 	}
 	c := Claude{At: time.Now(), Days: days, Model: model, BySize: map[string]Sample{}}
+	if len(mineLater) >= MinSamples {
+		c.RideAlong = Median(mineLater)
+	} else {
+		c.RideAlong = Median(allLater)
+	}
 	last := ""
 	for _, size := range skills.SizeOrder {
 		switch v := mine[size]; {
