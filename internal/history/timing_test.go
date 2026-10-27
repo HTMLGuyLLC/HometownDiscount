@@ -55,3 +55,27 @@ func TestReadTimings(t *testing.T) {
 		t.Errorf("job duration = %v, want 63s", h.Jobs[0].Duration())
 	}
 }
+
+// The current model comes from recently changed main transcripts only.
+func TestRecentModel(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "-Users-me-app")
+	os.MkdirAll(filepath.Join(proj, "s2", "subagents"), 0o755)
+	now := time.Now().UTC().Format(time.RFC3339)
+	line := func(id, model string) string {
+		return `{"type":"assistant","timestamp":"` + now + `","message":{"id":"` + id + `","model":"` + model + `","usage":{"input_tokens":1,"output_tokens":1},"content":[]}}`
+	}
+	os.WriteFile(filepath.Join(proj, "new.jsonl"), []byte(line("a", "claude-opus-5-5")+"\n"+line("b", "claude-opus-5-5[1m]")+"\n"+line("c", "claude-sonnet-5")+"\n"), 0o644)
+	old := filepath.Join(proj, "old.jsonl")
+	os.WriteFile(old, []byte(line("d", "claude-opus-5")+"\n"+line("e", "claude-opus-5")+"\n"+line("f", "claude-opus-5")+"\n"), 0o644)
+	os.Chtimes(old, time.Now().AddDate(0, 0, -10), time.Now().AddDate(0, 0, -10))
+	sub := filepath.Join(proj, "s2", "subagents", "agent-x.jsonl")
+	os.WriteFile(sub, []byte(line("g", "claude-haiku-5-5")+"\n"+line("h", "claude-haiku-5-5")+"\n"+line("i", "claude-haiku-5-5")+"\n"), 0o644)
+
+	if got := RecentModel(root, 3*24*time.Hour); got != "claude-opus-5-5" {
+		t.Errorf("RecentModel = %q, want claude-opus-5-5 (old files and subagents don't count)", got)
+	}
+	if got := RecentModel(t.TempDir(), time.Hour); got != "" {
+		t.Errorf("no transcripts: %q", got)
+	}
+}

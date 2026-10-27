@@ -449,6 +449,41 @@ func readSubagent(path, root string) (*Job, []ReadSample, error) {
 	return job, timer.samples, nil
 }
 
+// RecentModel is the Claude model the user has used most in main
+// conversations over the last `within`, read from recently changed
+// transcripts only, so it's quick. "" when there are none.
+func RecentModel(root string, within time.Duration) string {
+	since := time.Now().Add(-within)
+	count := map[string]int{}
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".jsonl") || filepath.Base(filepath.Dir(path)) == "subagents" {
+			return nil
+		}
+		if info, err := d.Info(); err != nil || info.ModTime().Before(since) {
+			return nil
+		}
+		var reqs requests
+		_ = eachEntry(path, func(e *rawEntry) {
+			if !e.IsSidechain {
+				reqs.add(e)
+			}
+		})
+		for _, r := range reqs.list {
+			if !r.Time.Before(since) {
+				count[r.Model]++
+			}
+		}
+		return nil
+	})
+	best, n := "", 0
+	for m, c := range count {
+		if c > n || (c == n && m < best) {
+			best, n = m, c
+		}
+	}
+	return best
+}
+
 var safeID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 // eachEntry calls fn for every JSON line in a file, skipping lines that don't parse.

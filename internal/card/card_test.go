@@ -116,3 +116,36 @@ func TestSpeedOnTheCard(t *testing.T) {
 		}
 	}
 }
+
+// Replays are split by the Claude model they're graded against, and the
+// card says which; skill-check speed names the model it's compared with.
+func TestRowsPerClaudeModel(t *testing.T) {
+	var runs []store.Run
+	for i := 0; i < 5; i++ {
+		runs = append(runs,
+			store.Run{Type: "review", Tier: "small", Rung: "r1", Reference: "claude-opus-5-5", Graded: true},
+			store.Run{Type: "review", Tier: "small", Rung: "r1", Reference: "claude-sonnet-5[1m]", Graded: true, Pass: i < 1},
+		)
+	}
+	for i := 0; i < 24; i++ {
+		runs = append(runs, store.Run{Type: "skill:lookup", Tier: "medium", Rung: "r1", Graded: true, Pass: true, Seconds: 40})
+	}
+	claude := speed.Claude{Model: "claude-opus-5-5", BySize: map[string]speed.Sample{"medium": {Seconds: 4, N: 99}}}
+	rows := WithSpeed(Build(runs, nil), config.Speed{MaxSlower: 20}, claude)
+	if len(rows) != 3 {
+		t.Fatalf("want lookup plus one review row per Claude model, got %d rows", len(rows))
+	}
+	var buf bytes.Buffer
+	Headline(&buf, rows)
+	out := buf.String()
+	for _, want := range []string{"review jobs vs Opus 5.5 (small, 0 of 5 passed)", "review jobs vs Sonnet 5 (small, 1 of 5 passed)", "lookup over 200 lines (vs Opus 5.5: limit +20%)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("headline missing %q:\n%s", want, out)
+		}
+	}
+	buf.Reset()
+	Render(&buf, rows)
+	if out := buf.String(); !strings.Contains(out, "review vs Opus 5.5") || !strings.Contains(out, "Opus 5.5's typical time") {
+		t.Errorf("details:\n%s", out)
+	}
+}

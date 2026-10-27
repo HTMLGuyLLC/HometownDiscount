@@ -72,6 +72,32 @@ var (
 	dateSuffix    = regexp.MustCompile(`-\d{8}$`)
 )
 
+// Display is a model id in plain words: "claude-opus-5-5" -> "Opus 5.5",
+// "claude-3-5-haiku" -> "Haiku 3.5". Unknown shapes come back unchanged.
+func Display(model string) string {
+	parts := strings.Split(strings.TrimPrefix(Normalize(model), "claude-"), "-")
+	var family string
+	var version []string
+	for _, p := range parts {
+		switch {
+		case p == "":
+		case p[0] >= '0' && p[0] <= '9':
+			version = append(version, p)
+		case family == "":
+			family = strings.ToUpper(p[:1]) + p[1:]
+		default:
+			return model
+		}
+	}
+	if family == "" {
+		return model
+	}
+	if len(version) == 0 {
+		return family
+	}
+	return family + " " + strings.Join(version, ".")
+}
+
 // Normalize strips context-window tags like "[1m]" and date snapshots like
 // "-20251001" so transcript model names match the table.
 func Normalize(model string) string {

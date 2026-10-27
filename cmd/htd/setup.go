@@ -58,7 +58,7 @@ func runSetup(args []string, stdin io.Reader, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	claudeTimes(dir, h, 30, nil) // for the speed limits
+	claudeTimes(dir, history.DefaultRoot(), h, 30, cfg.Speed.ClaudeModel, nil) // for the speed limits
 	m := spendmap.Build(h, prices, since, 30)
 	fmt.Fprintf(stdout, "1/2 Your spend map ..... %d subagent jobs in 30 days (%.0f%% of your Claude usage) → `htd map`\n", m.Jobs, m.Share()*100)
 

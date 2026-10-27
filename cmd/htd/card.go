@@ -13,6 +13,7 @@ import (
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/card"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/config"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/delegate"
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/history"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/store"
 )
 
@@ -46,7 +47,7 @@ func runCard(args []string, stdout, stderr io.Writer) error {
 	}
 	rows := card.Build(runs, labels)
 	if len(rows) > 0 {
-		rows = card.WithSpeed(rows, cfg.Speed, claudeTimes(dir, nil, 30, stdout))
+		rows = card.WithSpeed(rows, cfg.Speed, claudeTimes(dir, history.DefaultRoot(), nil, 30, cfg.Speed.ClaudeModel, stdout))
 	}
 	if *details {
 		card.Render(stdout, rows)

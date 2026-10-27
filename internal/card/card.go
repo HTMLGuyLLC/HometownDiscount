@@ -12,16 +12,19 @@ import (
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/config"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/jobtype"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/ladder"
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/pricing"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/skills"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/speed"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/store"
 )
 
-// Row is one rung × job type.
+// Row is one rung × job type × size; replays also by the Claude model whose
+// answers they're graded against.
 type Row struct {
 	Rung      string
 	Type      string
 	Tier      string // small, large, or "" for runs from before tiers
+	Reference string // replays: the original job's Claude model; "" for skill checks
 	Graded    int
 	Passed    int
 	Skipped   int // replays that couldn't be graded
@@ -32,12 +35,13 @@ type Row struct {
 	AvgSecs   float64
 	AvgExtra  float64
 
-	MedianSecs float64 // the local model's median time per graded run
-	RefRatio   float64 // replays: median of local time ÷ the original job's time
-	RefN       int     // replays with the original job's time
-	ClaudeSecs float64 // skill checks: Claude's typical time at this size
-	ClaudeFrom string  // set when that time is borrowed from a smaller size
-	Speed      speed.Verdict
+	MedianSecs  float64 // the local model's median time per graded run
+	RefRatio    float64 // replays: median of local time ÷ the original job's time
+	RefN        int     // replays with the original job's time
+	ClaudeSecs  float64 // skill checks: Claude's typical time at this size
+	ClaudeFrom  string  // set when that time is borrowed from a smaller size
+	ClaudeModel string  // skill checks: the Claude model speed is compared with
+	Speed       speed.Verdict
 }
 
 // Label is the plain word the user sees: proven, learning, hint or off.
@@ -58,15 +62,18 @@ func (r Row) Label() string {
 
 // Build groups runs by rung and job type and evaluates each group.
 func Build(runs []store.Run, labels map[string]string) []Row {
-	type key struct{ rung, typ, tier string }
+	type key struct{ rung, typ, tier, ref string }
 	groups := map[key][]store.Run{}
 	for _, r := range runs {
-		k := key{r.Rung, r.Type, r.Tier}
+		k := key{r.Rung, r.Type, r.Tier, ""}
+		if !strings.HasPrefix(r.Type, skills.TypePrefix) {
+			k.ref = pricing.Normalize(r.Reference)
+		}
 		groups[k] = append(groups[k], r)
 	}
 	var rows []Row
 	for k, rs := range groups {
-		row := Row{Rung: k.rung, Type: k.typ, Tier: k.tier, Bar: ladder.Bar(ladder.DefaultST, ladder.DefaultMargin), BarSource: "default"}
+		row := Row{Rung: k.rung, Type: k.typ, Tier: k.tier, Reference: k.ref, Bar: ladder.Bar(ladder.DefaultST, ladder.DefaultMargin), BarSource: "default"}
 		if strings.HasPrefix(k.typ, skills.TypePrefix) {
 			row.Bar, row.BarSource = skills.Bar, "fixed"
 		}
@@ -117,6 +124,9 @@ func Build(runs []store.Run, labels map[string]string) []Row {
 		if rows[i].Type != rows[k].Type {
 			return order[rows[i].Type] < order[rows[k].Type]
 		}
+		if rows[i].Reference != rows[k].Reference {
+			return rows[i].Reference < rows[k].Reference
+		}
 		return tierOrder(rows[i].Tier) < tierOrder(rows[k].Tier)
 	})
 	return rows
@@ -133,7 +143,7 @@ func WithSpeed(rows []Row, s config.Speed, c speed.Claude) []Row {
 		var compared bool
 		if isSkill {
 			if cl, ok := c.BySize[r.Tier]; ok && cl.Seconds > 0 {
-				r.ClaudeSecs, r.ClaudeFrom = cl.Seconds, cl.From
+				r.ClaudeSecs, r.ClaudeFrom, r.ClaudeModel = cl.Seconds, cl.From, c.Model
 				ratio = r.MedianSecs / cl.Seconds
 				compared = r.Graded >= speed.MinSamples
 			}
@@ -179,36 +189,37 @@ func Headline(w io.Writer, rows []Row) {
 	for _, rung := range rungs {
 		fmt.Fprintln(w, rung)
 		var can, learning, cannot []string
-		best := map[string]Row{}
+		best := map[string]Row{} // per type (and Claude model), the largest proven size it takes
 		var order []string
-		slowest := map[string]Row{} // per type, the smallest proven size that's too slow
+		slowest := map[string]Row{} // per type (and Claude model), the smallest proven size that's too slow
 		var slowOrder []string
 		for _, r := range byRung[rung] {
+			id := r.Type + "|" + r.Reference
 			switch {
 			case r.State == ladder.Proven && r.Speed.Kept:
-				if b, ok := slowest[r.Type]; !ok || tierOrder(r.Tier) < tierOrder(b.Tier) {
+				if b, ok := slowest[id]; !ok || tierOrder(r.Tier) < tierOrder(b.Tier) {
 					if !ok {
-						slowOrder = append(slowOrder, r.Type)
+						slowOrder = append(slowOrder, id)
 					}
-					slowest[r.Type] = r
+					slowest[id] = r
 				}
 			case r.State == ladder.Proven:
-				if b, ok := best[r.Type]; !ok || tierOrder(r.Tier) > tierOrder(b.Tier) {
+				if b, ok := best[id]; !ok || tierOrder(r.Tier) > tierOrder(b.Tier) {
 					if !ok {
-						order = append(order, r.Type)
+						order = append(order, id)
 					}
-					best[r.Type] = r
+					best[id] = r
 				}
 			case r.State == ladder.NotEnough || r.State == ladder.NotProven:
-				cannot = append(cannot, fmt.Sprintf("%s (%s, %d of %d passed)", name(r.Type), sizeWords(r), r.Passed, r.Graded))
+				cannot = append(cannot, fmt.Sprintf("%s (%s, %d of %d passed)", rowName(r), sizeWords(r), r.Passed, r.Graded))
 			default:
 				if r.Graded > 0 {
-					learning = append(learning, fmt.Sprintf("%s (%s, %d of %d passed)", name(r.Type), sizeWords(r), r.Passed, r.Graded))
+					learning = append(learning, fmt.Sprintf("%s (%s, %d of %d passed)", rowName(r), sizeWords(r), r.Passed, r.Graded))
 				}
 			}
 		}
-		for _, t := range order {
-			can = append(can, fmt.Sprintf("%s (%s)", name(t), sizeWords(best[t])))
+		for _, id := range order {
+			can = append(can, fmt.Sprintf("%s (%s)", rowName(best[id]), sizeWords(best[id])))
 		}
 		line := func(label string, items []string) {
 			if len(items) > 0 {
@@ -239,33 +250,48 @@ func slowItems(order []string, slowest map[string]Row) []string {
 		return nil
 	}
 	over := map[string]string{"medium": " over 200 lines", "large": " over 1,000 lines"}
-	limits := map[string]bool{}
+	limits, against := map[string]bool{}, map[string]bool{}
 	var items []string
-	for _, t := range order {
-		r := slowest[t]
-		item := strings.TrimSuffix(name(t), " jobs")
-		if strings.HasPrefix(t, skills.TypePrefix) {
+	for _, id := range order {
+		r := slowest[id]
+		item := rowName(r)
+		if strings.HasPrefix(r.Type, skills.TypePrefix) {
 			item += over[r.Tier]
 		} else if r.Tier == "large" {
-			item = "large " + name(t)
-		} else {
-			item = name(t)
+			item = "large " + item
 		}
 		items = append(items, item)
 		limits[r.Speed.Rule.Limit()] = true
+		against[r.ClaudeModel] = true // replays carry their model in the name: ""
+	}
+	vs := "Claude"
+	if len(against) == 1 {
+		for m := range against {
+			if m != "" {
+				vs = pricing.Display(m)
+			}
+		}
 	}
 	if len(limits) == 1 {
 		for l := range limits {
 			if l == "never local" {
 				items[len(items)-1] += " (your setting: never local)"
 			} else {
-				items[len(items)-1] += " (vs Claude: " + l + ")"
+				items[len(items)-1] += " (vs " + vs + ": " + l + ")"
 			}
 		}
 	} else {
-		items[len(items)-1] += " (vs Claude: each has its own limit)"
+		items[len(items)-1] += " (vs " + vs + ": each has its own limit)"
 	}
 	return items
+}
+
+// rowName is a row in plain words: "lookup", or "review jobs vs Opus 5.5".
+func rowName(r Row) string {
+	if r.Reference == "" {
+		return name(r.Type)
+	}
+	return name(r.Type) + " vs " + pricing.Display(r.Reference)
 }
 
 // name is a row type in plain words: skills by name, replays as "jobs".
@@ -319,8 +345,12 @@ func Render(w io.Writer, rows []Row) {
 		if tier == "" {
 			tier = "-"
 		}
+		typ := r.Type
+		if r.Reference != "" {
+			typ += " vs " + pricing.Display(r.Reference)
+		}
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%d of %d\t%.2f\t%.2f (%s)\t%s\t%s\t%s (%s)\t%s\t\n",
-			r.Type, tier, r.Label(), r.Passed, r.Graded, r.Lower, r.Bar, r.BarSource, secs(r.MedianSecs),
+			typ, tier, r.Label(), r.Passed, r.Graded, r.Lower, r.Bar, r.BarSource, secs(r.MedianSecs),
 			claudeTime(r), r.Speed.Pace(), r.Speed.Rule.Limit(), goesTo(r))
 	}
 	tw.Flush()
@@ -330,8 +360,15 @@ func Render(w io.Writer, rows []Row) {
 	fmt.Fprintln(w, "Replays (find, review...): small = no more tool calls than your median for that type; the bar is the original")
 	fmt.Fprintln(w, "  model's self-agreement minus 7 points, \"default\" (0.86) until that's measured.")
 	fmt.Fprintln(w, "Skill checks (skill:...): exact answers from your code; small ≤ 200 lines, medium ≤ 1,000, large ≤ 4,000; fixed bar 0.85.")
-	fmt.Fprintln(w, "Time: the local model's median. Claude: its typical time to answer after reading a file that size, from your")
-	fmt.Fprintln(w, "  transcripts (≈ borrowed from a smaller size); replays compare with the original job's own time.")
+	against := "Claude"
+	for _, r := range rows {
+		if r.ClaudeModel != "" {
+			against = pricing.Display(r.ClaudeModel)
+			break
+		}
+	}
+	fmt.Fprintf(w, "Time: the local model's median. Claude: %s's typical time to answer after reading a file that size, from\n", against)
+	fmt.Fprintln(w, "  your transcripts (≈ borrowed from a smaller size or other models); replays compare with the original job's own time.")
 	fmt.Fprintln(w, "Goes to: a proven task goes local only within its speed limit. Set limits under [speed] in ~/.htd/config.toml.")
 	if skipped := sum(rows, func(r Row) int { return r.Skipped }); skipped > 0 {
 		noun := "replays"

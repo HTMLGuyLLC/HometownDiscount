@@ -25,6 +25,7 @@ import (
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/ladder"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/llm"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/loop"
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/pricing"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/recording"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/sandbox"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/schedule"
@@ -89,7 +90,7 @@ func runReplay(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	claudeTimes(dir, h, *days, nil) // the scan is done anyway: keep Claude's times current
+	claudeTimes(dir, *root, h, *days, cfg.Speed.ClaudeModel, nil) // the scan is done anyway: keep Claude's times current
 	candidates, byID := replayCandidates(h.Jobs, done, *types)
 	if len(candidates) == 0 {
 		fmt.Fprintln(stdout, "Nothing new to replay on this setup. Run `htd card` to see the results.")
@@ -100,7 +101,8 @@ func runReplay(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	bar := ladder.Bar(ladder.DefaultST, ladder.DefaultMargin)
-	sched := schedule.New(schedule.Replays, candidates, prior, bar)
+	order := replayOrder(candidates, prior)
+	sched := schedule.New(order, candidates, prior, bar)
 	fmt.Fprintf(stdout, "Replaying up to %d jobs on %s\nEasiest job types first, small jobs before large; a tier stops as soon as it clearly can't reach the bar.\n\n", *max, rung.Label())
 	keepAwake()
 
@@ -122,7 +124,8 @@ func runReplay(args []string, stdout, stderr io.Writer) error {
 		if !ok {
 			break
 		}
-		q := queued{job: byID[sj.ID], typ: sj.Type}
+		typ, _ := splitRef(sj.Type)
+		q := queued{job: byID[sj.ID], typ: typ}
 		// The model is locked per turn, not per job, so an ask_local call
 		// from Claude waits for one turn at most. Time spent waiting for the
 		// lock doesn't count against the replay.
@@ -162,9 +165,9 @@ func runReplay(args []string, stdout, stderr io.Writer) error {
 		case run.Reason != "":
 			status = "fail (" + run.Reason + ")"
 		}
-		fmt.Fprintf(stdout, "[%d] %-6s %-9s %-34s %s\n", ran, sj.Tier, sj.Type, status, secsLabel(run.Seconds))
+		fmt.Fprintf(stdout, "[%d] %-6s %-22s %-34s %s\n", ran, sj.Tier, refLabel(sj.Type), status, secsLabel(run.Seconds))
 		if after := sched.State(k); after != before {
-			fmt.Fprintf(stdout, "    → %s %s: %s\n", sj.Tier, sj.Type, after)
+			fmt.Fprintf(stdout, "    → %s %s: %s\n", sj.Tier, refLabel(sj.Type), after)
 		}
 	}
 	fmt.Fprintf(stdout, "\n%d replayed, %d passed.\n", ran, passed)
@@ -176,15 +179,72 @@ func runReplay(args []string, stdout, stderr io.Writer) error {
 		sort.Strings(parts)
 		fmt.Fprintf(stdout, "Skipped (not counted either way): %s.\n", strings.Join(parts, ", "))
 	}
-	for _, typ := range jobtype.TypeOrder {
-		for _, tier := range jobtype.Tiers {
+	for _, typ := range order.Types {
+		for _, tier := range order.Tiers {
 			if k := (schedule.Key{Type: typ, Tier: tier}); touched[k] {
-				fmt.Fprintf(stdout, "  %s %s: %s\n", tier, typ, sched.State(k))
+				fmt.Fprintf(stdout, "  %s %s: %s\n", tier, refLabel(typ), sched.State(k))
 			}
 		}
 	}
 	fmt.Fprintln(stdout, "Run `htd card` to see where each job type stands.")
 	return nil
+}
+
+// Replays are grouped by job type and by the Claude model that wrote the
+// original answer: matching Sonnet 5 doesn't prove a match for Opus 5.5.
+// The scheduler sees "review|claude-opus-5-5" as one type.
+const refSep = "|"
+
+func refKey(typ, model string) string {
+	if model == "" {
+		return typ
+	}
+	return typ + refSep + pricing.Normalize(model)
+}
+
+func splitRef(key string) (typ, model string) {
+	typ, model, _ = strings.Cut(key, refSep)
+	return typ, model
+}
+
+// refLabel is a scheduler type in plain words: "review vs Opus 5.5".
+func refLabel(key string) string {
+	typ, model := splitRef(key)
+	if model == "" {
+		return typ
+	}
+	return typ + " vs " + pricing.Display(model)
+}
+
+// replayOrder keeps the usual job-type order, with each type's Claude
+// models in name order.
+func replayOrder(jobs []schedule.Job, prior map[schedule.Key][]bool) schedule.Order {
+	models := map[string]map[string]bool{}
+	note := func(key string) {
+		typ, model := splitRef(key)
+		if models[typ] == nil {
+			models[typ] = map[string]bool{}
+		}
+		models[typ][model] = true
+	}
+	for _, j := range jobs {
+		note(j.Type)
+	}
+	for k := range prior {
+		note(k.Type)
+	}
+	order := schedule.Order{Tiers: schedule.Replays.Tiers}
+	for _, typ := range schedule.Replays.Types {
+		var ms []string
+		for m := range models[typ] {
+			ms = append(ms, m)
+		}
+		sort.Strings(ms)
+		for _, m := range ms {
+			order.Types = append(order.Types, refKey(typ, m))
+		}
+	}
+	return order
 }
 
 type queued struct {
@@ -225,7 +285,7 @@ func replayCandidates(jobs []history.Job, done map[string]bool, types string) ([
 	byID := map[string]*history.Job{}
 	for i, j := range eligible {
 		n := jobtype.ToolCalls(j.Tools)
-		out = append(out, schedule.Job{ID: j.AgentID, Type: typs[i], Tier: jobtype.ActualTier(n, median[typs[i]]), Calls: n})
+		out = append(out, schedule.Job{ID: j.AgentID, Type: refKey(typs[i], j.Model()), Tier: jobtype.ActualTier(n, median[typs[i]]), Calls: n})
 		byID[j.AgentID] = j
 	}
 	return out, byID
@@ -240,7 +300,7 @@ func priorEvidence(st *store.Store, rungID string) (map[schedule.Key][]bool, err
 	prior := map[schedule.Key][]bool{}
 	for _, r := range runs {
 		if r.Rung == rungID && r.Graded && r.Tier != "" {
-			k := schedule.Key{Type: r.Type, Tier: r.Tier}
+			k := schedule.Key{Type: refKey(r.Type, r.Reference), Tier: r.Tier}
 			prior[k] = append(prior[k], r.Pass)
 		}
 	}

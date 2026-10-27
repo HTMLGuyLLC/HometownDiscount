@@ -57,3 +57,21 @@ func TestCost(t *testing.T) {
 		t.Error("unknown model should not be priced")
 	}
 }
+
+func TestDisplay(t *testing.T) {
+	for in, want := range map[string]string{
+		"claude-opus-5-5":            "Opus 5.5",
+		"claude-opus-5-5[1m]":        "Opus 5.5",
+		"claude-sonnet-5":            "Sonnet 5",
+		"claude-haiku-5-5-20260101":  "Haiku 5.5",
+		"claude-3-5-haiku":           "Haiku 3.5",
+		"claude-fable-5-1":           "Fable 5.1",
+		"gpt-5":                      "Gpt 5",
+		"":                           "",
+		"some-custom-router-model-x": "some-custom-router-model-x",
+	} {
+		if got := Display(in); got != want {
+			t.Errorf("Display(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

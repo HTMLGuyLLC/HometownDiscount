@@ -61,3 +61,14 @@ max_slower = 10
 		}
 	}
 }
+
+func TestClaudeModelSetting(t *testing.T) {
+	dir := t.TempDir()
+	if c, _ := Load(dir); c.Speed.ClaudeModel != "auto" {
+		t.Errorf("default claude_model = %q, want auto", c.Speed.ClaudeModel)
+	}
+	os.WriteFile(Path(dir), []byte("[speed]\nclaude_model = \"\"\n"), 0o600)
+	if _, err := Load(dir); err == nil {
+		t.Error("an empty claude_model should be an error")
+	}
+}

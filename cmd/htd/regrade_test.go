@@ -5,7 +5,9 @@ import (
 
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/grade"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/jobtype"
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/schedule"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/store"
+	"strings"
 )
 
 func TestGradable(t *testing.T) {
@@ -48,5 +50,26 @@ func TestSameGrade(t *testing.T) {
 	b.Extra = 2
 	if sameGrade(a, b) {
 		t.Error("a different extra count is a change")
+	}
+}
+
+// Replays are scheduled per job type and Claude model, keeping the usual
+// type order.
+func TestReplayGroupsByClaudeModel(t *testing.T) {
+	if k := refKey("review", "claude-opus-5-5[1m]"); k != "review|claude-opus-5-5" {
+		t.Errorf("refKey = %q", k)
+	}
+	if typ, model := splitRef("review|claude-opus-5-5"); typ != "review" || model != "claude-opus-5-5" {
+		t.Errorf("splitRef = %q, %q", typ, model)
+	}
+	if l := refLabel("review|claude-sonnet-5"); l != "review vs Sonnet 5" {
+		t.Errorf("refLabel = %q", l)
+	}
+	jobs := []schedule.Job{{ID: "1", Type: "review|claude-sonnet-5"}, {ID: "2", Type: "find|claude-opus-5-5"}}
+	prior := map[schedule.Key][]bool{{Type: "review|claude-opus-5-5", Tier: "small"}: {true}}
+	got := replayOrder(jobs, prior).Types
+	want := []string{"find|claude-opus-5-5", "review|claude-opus-5-5", "review|claude-sonnet-5"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("order = %v, want %v", got, want)
 	}
 }

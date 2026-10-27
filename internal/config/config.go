@@ -49,8 +49,11 @@ type Report struct {
 // ("lookup:large") with a percent, "always" (skip the speed check) or
 // "never" (Claude always does it).
 type Speed struct {
-	MaxSlower float64        `toml:"max_slower"` // percent; -1 turns the speed check off
-	ByTask    map[string]any `toml:"by_task,omitempty"`
+	MaxSlower float64 `toml:"max_slower"` // percent; -1 turns the speed check off
+	// ClaudeModel is the Claude model speed is compared with: "auto" (the
+	// one used most in the last few days) or a model id like "claude-opus-5-5".
+	ClaudeModel string         `toml:"claude_model"`
+	ByTask      map[string]any `toml:"by_task,omitempty"`
 }
 
 // Config is the whole file.
@@ -66,7 +69,7 @@ type Config struct {
 func Default() Config {
 	return Config{
 		Routing:     "ask",
-		Speed:       Speed{MaxSlower: 20},
+		Speed:       Speed{MaxSlower: 20, ClaudeModel: "auto"},
 		Calibration: Calibration{CapUSD: 0, Rungs: []string{"haiku"}},
 		Report:      Report{WeeklySummary: true, SupportPrompt: true, SupportMinUSD: 5},
 	}
@@ -135,6 +138,9 @@ func Tasks() []string {
 // check rejects by_task entries that would silently do nothing, so a typo
 // can't send work somewhere the user didn't mean.
 func (s Speed) check() error {
+	if strings.TrimSpace(s.ClaudeModel) == "" {
+		return errors.New(`[speed] claude_model: use "auto" or a model id like "claude-opus-5-5"`)
+	}
 	keys := make([]string, 0, len(s.ByTask))
 	for k := range s.ByTask {
 		keys = append(keys, k)

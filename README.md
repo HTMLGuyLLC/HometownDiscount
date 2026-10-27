@@ -79,6 +79,7 @@ Results are kept per **model · quant · loop**. Changing any of them starts fre
 ```toml
 [speed]
 max_slower = 20              # default for everything; -1 turns the speed check off
+claude_model = "auto"        # compare with the Claude model you used most in the last 3 days, or e.g. "claude-opus-5-5"
 
 [speed.by_task]              # "task:size" beats "task" beats the default
 "lookup:small" = 5           # small lookups: within 5% of Claude
@@ -89,7 +90,9 @@ max_slower = 20              # default for everything; -1 turns the speed check 
 
 Tasks: `json`, `lookup`, `lines`, `list`, `files` (skill checks) and `find`, `extract`, `classify`, `transform`, `review`, `research` (replays). Sizes: `small` (up to 200 lines), `medium` (up to 1,000), `large` (up to 4,000). A typo stops htd with a message instead of being ignored. `ask_local` picks up changes on its next call.
 
-Claude's side of the comparison costs nothing: for skill checks, htd times how long Claude took to answer after reading a file that size in your own transcripts (re-measured weekly); for replays, it uses how long the original job took. Until there are at least 5 timings on both sides, accuracy alone decides.
+Claude's side of the comparison costs nothing: for skill checks, htd times how long that Claude model took to answer after reading a file that size in your own transcripts (re-measured weekly, and whenever you switch models); for replays, it uses how long the original job took. Until there are at least 5 timings on both sides, accuracy alone decides.
+
+**Results are tied to the Claude model too.** A replay is graded against the answer one Claude model wrote, so replay results are kept per Claude model: the card shows "review jobs vs Opus 5.5" separately from "vs Sonnet 5", since matching one doesn't prove a match for the other. Skill checks have exact answers, so they don't depend on Claude.
 
 ## Commands
 

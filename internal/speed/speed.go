@@ -13,6 +13,7 @@ import (
 
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/config"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/history"
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/pricing"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/skills"
 )
 
@@ -24,37 +25,50 @@ const MinSamples = 5
 type Sample struct {
 	Seconds float64 `json:"seconds"`
 	N       int     `json:"n"`
-	// From names a smaller size whose time stands in for this one when this
-	// size has too few timings. Claude is no faster on bigger files, so the
-	// stand-in never makes the local model look better than it is.
+	// From says where the time came from when this model and size have too
+	// few timings: a smaller size of the same model ("medium"), or every
+	// Claude model ("all models"). Claude is no faster on bigger files, so a
+	// smaller size's time never makes the local model look better.
 	From string `json:"from,omitempty"`
 }
 
-// Claude is how long Claude typically takes to answer after reading one file,
-// by input size, from the user's own transcripts.
+// Claude is how long one Claude model typically takes to answer after
+// reading one file, by input size, from the user's own transcripts.
 type Claude struct {
 	At     time.Time         `json:"at"`
 	Days   int               `json:"days"`
+	Model  string            `json:"model"` // "" when no model was known: every model's times
 	BySize map[string]Sample `json:"by_size"`
 }
 
-// Estimate builds Claude's times from read samples.
-func Estimate(reads []history.ReadSample, days int) Claude {
-	by := map[string][]float64{}
+// Estimate builds a Claude model's times from read samples. A size with too
+// few timings for that model borrows its smaller size's time, then every
+// model's time at that size.
+func Estimate(reads []history.ReadSample, days int, model string) Claude {
+	model = pricing.Normalize(model)
+	mine, all := map[string][]float64{}, map[string][]float64{}
 	for _, r := range reads {
-		if size := skills.SizeOf(r.Lines); size != "" && r.Seconds > 0 {
-			by[size] = append(by[size], r.Seconds)
+		size := skills.SizeOf(r.Lines)
+		if size == "" || r.Seconds <= 0 {
+			continue
+		}
+		all[size] = append(all[size], r.Seconds)
+		if model == "" || pricing.Normalize(r.Model) == model {
+			mine[size] = append(mine[size], r.Seconds)
 		}
 	}
-	c := Claude{At: time.Now(), Days: days, BySize: map[string]Sample{}}
+	c := Claude{At: time.Now(), Days: days, Model: model, BySize: map[string]Sample{}}
 	last := ""
 	for _, size := range skills.SizeOrder {
-		if v := by[size]; len(v) >= MinSamples {
+		switch v := mine[size]; {
+		case len(v) >= MinSamples:
 			c.BySize[size] = Sample{Seconds: Median(v), N: len(v)}
 			last = size
-		} else if last != "" {
+		case last != "":
 			s := c.BySize[last]
 			c.BySize[size] = Sample{Seconds: s.Seconds, N: s.N, From: last}
+		case len(all[size]) >= MinSamples:
+			c.BySize[size] = Sample{Seconds: Median(all[size]), N: len(all[size]), From: "all models"}
 		}
 	}
 	return c

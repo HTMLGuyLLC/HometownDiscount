@@ -14,7 +14,7 @@ func TestEstimate(t *testing.T) {
 		reads = append(reads, history.ReadSample{Lines: 500, Seconds: float64(10 + i)}) // medium: median 15
 	}
 	reads = append(reads, history.ReadSample{Lines: 3000, Seconds: 1}) // one large: too few
-	c := Estimate(reads, 30)
+	c := Estimate(reads, 30, "")
 	if s := c.BySize["small"]; s.Seconds != 5 || s.N != 9 || s.From != "" {
 		t.Errorf("small = %+v", s)
 	}
@@ -25,7 +25,7 @@ func TestEstimate(t *testing.T) {
 	if s := c.BySize["large"]; s.Seconds != 15 || s.From != "medium" {
 		t.Errorf("large = %+v", s)
 	}
-	if c := Estimate(nil, 30); len(c.BySize) != 0 {
+	if c := Estimate(nil, 30, ""); len(c.BySize) != 0 {
 		t.Errorf("no reads should give no times: %+v", c)
 	}
 }
@@ -113,5 +113,31 @@ func TestSaveLoad(t *testing.T) {
 	got, ok := Load(dir)
 	if !ok || got.BySize["small"].Seconds != 3 || got.Days != 30 {
 		t.Errorf("loaded %+v", got)
+	}
+}
+
+// Times are per Claude model: Opus 5 being quick says nothing about Opus 5.5.
+// A size with too few timings for the model borrows its own smaller size
+// first, then every model's time.
+func TestEstimatePerModel(t *testing.T) {
+	var reads []history.ReadSample
+	for i := 0; i < 6; i++ {
+		reads = append(reads, history.ReadSample{Lines: 50, Seconds: 10, Model: "claude-opus-5-5"})
+	}
+	for i := 0; i < 10; i++ {
+		reads = append(reads,
+			history.ReadSample{Lines: 50, Seconds: 2, Model: "claude-opus-5[1m]"},
+			history.ReadSample{Lines: 500, Seconds: 3, Model: "claude-opus-5"})
+	}
+	c := Estimate(reads, 30, "claude-opus-5-5")
+	if c.Model != "claude-opus-5-5" || c.BySize["small"].Seconds != 10 || c.BySize["small"].From != "" {
+		t.Errorf("small = %+v", c.BySize["small"])
+	}
+	if s := c.BySize["medium"]; s.Seconds != 10 || s.From != "small" {
+		t.Errorf("medium should borrow Opus 5.5's small time, not Opus 5's: %+v", s)
+	}
+	h := Estimate(reads, 30, "claude-haiku-5-5")
+	if s := h.BySize["small"]; s.From != "all models" || s.N != 16 {
+		t.Errorf("a model with no timings uses every model's: %+v", s)
 	}
 }
