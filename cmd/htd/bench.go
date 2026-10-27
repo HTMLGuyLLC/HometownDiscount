@@ -118,6 +118,12 @@ func runBench(args []string, stdout, stderr io.Writer) error {
 			sched.Record(j, false, false)
 			continue
 		}
+		if !waitForMemory(ctx, stdout) {
+			if ctx.Err() != nil {
+				return fmt.Errorf("skill checks stopped (%d done)", ran)
+			}
+			return fmt.Errorf("skill checks stopped (%d done): %w", ran, errLowMemory)
+		}
 		release, err := slot.Acquire(ctx, dir, 0, waiting(stdout)) // the timer starts once the model is ours
 		if err != nil {
 			return err

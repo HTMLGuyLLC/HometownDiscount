@@ -90,7 +90,7 @@ func runGold(args []string, stdout, stderr io.Writer) error {
 		}
 		if cache != "" && typ != jobtype.Research && c.tried < *sample {
 			c.tried++
-			ws, err := workspace.Prepare(context.Background(), it, j.Start, filepath.Join(cache, "base"), filepath.Join(cache, "jobs", j.AgentID))
+			ws, err := workspace.Prepare(context.Background(), it, jobFrom(j), filepath.Join(cache, "base"), filepath.Join(cache, "jobs", j.AgentID))
 			switch {
 			case err != nil:
 				c.noRepo++

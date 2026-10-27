@@ -25,6 +25,7 @@ import (
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/ladder"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/llm"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/loop"
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/memory"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/pricing"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/recording"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/sandbox"
@@ -123,6 +124,12 @@ func runReplay(args []string, stdout, stderr io.Writer) error {
 		sj, ok := sched.Next()
 		if !ok {
 			break
+		}
+		if !waitForMemory(ctx, stdout) {
+			if ctx.Err() != nil {
+				return fmt.Errorf("replay stopped (%d done)", ran)
+			}
+			return fmt.Errorf("replay stopped (%d done): %w", ran, errLowMemory)
 		}
 		typ, _ := splitRef(sj.Type)
 		q := queued{job: byID[sj.ID], typ: typ}
@@ -327,7 +334,7 @@ func replayOne(ctx context.Context, client llm.Chatter, q queued, rung store.Run
 		return store.Run{}, "", err
 	}
 	defer os.RemoveAll(jobDir)
-	ws, err := workspace.Prepare(ctx, it, q.job.Start, cache, filepath.Join(jobDir, "ws"))
+	ws, err := workspace.Prepare(ctx, it, jobFrom(q.job), cache, filepath.Join(jobDir, "ws"))
 	switch {
 	case err != nil && q.typ != jobtype.Research:
 		return store.Run{}, "no repo", nil
@@ -486,6 +493,41 @@ func serverUp(ctx context.Context, url string) func() bool {
 // serverWait is how long a batch waits for a crashed or recovering model
 // server; they often come back within a minute or two.
 var serverWait = 5 * time.Minute
+
+// readMemory, memoryWait and memoryPoll are variables so tests can stand in.
+var (
+	readMemory = memory.Read
+	memoryWait = 10 * time.Minute
+	memoryPoll = 15 * time.Second
+)
+
+// errLowMemory stops a long run that would otherwise keep a short-of-memory
+// machine swapping until it freezes.
+var errLowMemory = errors.New("this machine stayed low on memory, so the run stopped before it could freeze it. Close some apps or restart the model server (or lower its memory limit), then run again; finished work is kept")
+
+// waitForMemory pauses a long run while the machine is short of memory. A
+// model server that grows with use is the usual cause, and more work only
+// makes it worse. It reports false when memory stayed low for memoryWait or
+// the run was stopped.
+func waitForMemory(ctx context.Context, w io.Writer) bool {
+	s := readMemory()
+	if !s.Low() {
+		return true
+	}
+	fmt.Fprintf(w, "    Pausing: this machine is low on memory (%s). Waiting up to %s for it to recover...\n", s, memoryWait)
+	for deadline := time.Now().Add(memoryWait); time.Now().Before(deadline); {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(min(memoryPoll, memoryWait)):
+		}
+		if s = readMemory(); !s.Low() {
+			fmt.Fprintf(w, "    Memory recovered (%s); carrying on.\n", s)
+			return true
+		}
+	}
+	return false
+}
 
 // waitForServer waits until the model server answers again, up to serverWait.
 func waitForServer(ctx context.Context, up func() bool, w io.Writer) bool {

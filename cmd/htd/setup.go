@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/claudesettings"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/config"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/history"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/pricing"
@@ -18,7 +19,8 @@ import (
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/store"
 )
 
-// runSetup is the first-run wizard: spend map, then the hometown model.
+// runSetup is the first-run wizard: spend map, the hometown model, then
+// snapshots for replays.
 // Every step can be skipped with Enter, and nothing changes until the end.
 func runSetup(args []string, stdin io.Reader, stdout io.Writer) error {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
@@ -60,14 +62,14 @@ func runSetup(args []string, stdin io.Reader, stdout io.Writer) error {
 	}
 	claudeTimes(dir, history.DefaultRoot(), h, 30, cfg.Speed.ClaudeModel, nil) // for the speed limits
 	m := spendmap.Build(h, prices, since, 30)
-	fmt.Fprintf(stdout, "1/2 Your spend map ..... %d subagent jobs in 30 days (%.0f%% of your Claude usage) → `htd map`\n", m.Jobs, m.Share()*100)
+	fmt.Fprintf(stdout, "1/3 Your spend map ..... %d subagent jobs in 30 days (%.0f%% of your Claude usage) → `htd map`\n", m.Jobs, m.Share()*100)
 
-	// 2/2: the hometown model.
+	// 2/3: the hometown model.
 	def := "http://127.0.0.1:8000"
 	if len(cfg.Local) > 0 {
 		def = cfg.Local[0].URL
 	}
-	fmt.Fprintln(stdout, "2/2 Hometown model ..... any local server with an OpenAI-compatible API (MTPLX, Splish, Ollama, LM Studio, llama.cpp, vLLM)")
+	fmt.Fprintln(stdout, "2/3 Hometown model ..... any local server with an OpenAI-compatible API (MTPLX, Splish, Ollama, LM Studio, llama.cpp, vLLM)")
 	url := ask("    Server URL? (or \"none\")", def)
 	if url == "none" && len(cfg.Local) > 0 {
 		cfg.Local = nil // "none" means no local model, even one set up before
@@ -87,10 +89,32 @@ func runSetup(args []string, stdin io.Reader, stdout io.Writer) error {
 		}
 	}
 
+	// 3/3: snapshots, which only replays use.
+	addHook := false
+	if len(cfg.Local) > 0 {
+		on, err := claudesettings.Has(claudesettings.Path(), "PreToolUse", isSnapshotHook)
+		if err != nil {
+			fmt.Fprintf(stdout, "3/3 Snapshots .......... skipped: couldn't read %s (%v)\n", claudesettings.Path(), err)
+		} else if on {
+			fmt.Fprintln(stdout, "3/3 Snapshots .......... on")
+		} else {
+			fmt.Fprintln(stdout, "3/3 Snapshots .......... save your repo's uncommitted files (text only, no secrets, kept in ~/.htd) each time")
+			fmt.Fprintln(stdout, "    Claude starts a subagent, so replays see what each job saw. It adds a hook to Claude Code's settings.")
+			addHook = !strings.HasPrefix(strings.ToLower(ask("    Turn on? [Y/n]", "y")), "n")
+		}
+	}
+
 	if err := config.Save(dir, cfg); err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "\nSaved %s.\n", config.Path(dir))
+	if addHook {
+		if _, err := claudesettings.Add(claudesettings.Path(), snapshotHook(), isSnapshotHook); err != nil {
+			fmt.Fprintf(stdout, "Couldn't turn on snapshots (%v); `htd hooks on` tries again.\n", err)
+		} else {
+			fmt.Fprintf(stdout, "Snapshots are on (a hook in %s; `htd hooks off` stops them).\n", claudesettings.Path())
+		}
+	}
 	if len(cfg.Local) > 0 {
 		fmt.Fprintln(stdout, "Next, from inside one of your repos:")
 		fmt.Fprintln(stdout, "  htd bench    skill checks on your code (minutes; a few hours for a big repo)")
@@ -146,7 +170,7 @@ func configureModel(ctx context.Context, url string, allowRemote bool, ask func(
 		quant = ask("    Couldn't tell the quantization. Which is it? (e.g. 4bit, 8bit, Q4_K_M)", "unknown")
 	}
 	if mod.ContextLimited() {
-		fmt.Fprintf(stdout, "    Warning: the server gives it %d tokens of context but it supports %d. Raise it in your server's settings, or bigger checks will be skipped.\n", mod.Context, mod.MaxContext)
+		fmt.Fprintf(stdout, "    Warning: the server gives it %d tokens of context but it supports %d. Raise it to at least %d in your server's settings, or bigger checks will be skipped.\n", mod.Context, mod.MaxContext, min(servers.WantContext, mod.MaxContext))
 	}
 	fmt.Fprintln(stdout, "    Testing speed and tool calls (about a minute)...")
 	tps, serr := servers.MeasureSpeed(ctx, s, mod.ID)

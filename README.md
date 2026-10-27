@@ -98,7 +98,7 @@ Claude's side of the comparison costs nothing: for skill checks, htd times how l
 
 | Command | What it does |
 | --- | --- |
-| `htd setup` | First-run wizard: spend map, then your local model |
+| `htd setup` | First-run wizard: spend map, your local model, then snapshots |
 | `htd map [--days 30] [--json]` | Spend map: jobs, cost and cheaper-model prices per job type |
 | `htd bench [--repo .] [--max 150] [--timeout 5m]` | Skill checks from a repo, easiest first; stops early when a size clearly can't pass |
 | `htd replay [--max 40] [--types find,review] [--days 30]` | Replay past jobs on the local model; resumable (done jobs are skipped) |
@@ -107,11 +107,12 @@ Claude's side of the comparison costs nothing: for skill checks, htd times how l
 | `htd probe --url URL` | Check a server: models, context, quant, speed, tool calls |
 | `htd gold [--fidelity N]` | How many past jobs can be replayed |
 | `htd regrade [--apply]` | Re-grade saved answers after an update, without re-running the model; `--apply` saves the new grades |
-| `htd forget [--all] [--yes]` | Delete what htd stored in `~/.htd` after asking (`--all` also deletes your settings) |
+| `htd hooks [on\|off]` | Snapshots: save your repo's uncommitted files each time Claude starts a subagent, so replays see what each job saw (a Claude Code hook) |
+| `htd forget [--all] [--yes]` | Delete what htd stored in `~/.htd` after asking (`--all` also deletes your settings and htd's hook) |
 
 `bench` and `replay` also take `--url`, `--model` and `--allow-remote` to override the config for one run. Every command takes `--help`.
 
-**What's stored, all in `~/.htd`:** `config.toml`, `runs.jsonl` (one line per graded replay or check), `answers/` (each answer next to the expected one, for review by hand), `delegations.jsonl` (each `ask_local` call: skill, size, outcome; no file contents), `cache/` (Claude's typical times: medians only, no transcript content). See [PRIVACY.md](PRIVACY.md).
+**What's stored, all in `~/.htd`:** `config.toml`, `runs.jsonl` (one line per graded replay or check), `answers/` (each answer next to the expected one, for review by hand), `delegations.jsonl` (each `ask_local` call: skill, size, outcome; no file contents), `cache/` (Claude's typical times: medians only, no transcript content), `snapshots/` (uncommitted files saved as subagents start, when snapshots are on; kept 60 days). See [PRIVACY.md](PRIVACY.md).
 
 ## Reading the card
 
@@ -128,10 +129,11 @@ Skill checks have exact answers and a fixed bar of 85%. Replay results are a fir
 ## Good to know
 
 - **Big jobs fail, small work passes.** Common for local models: whole subagent jobs can be too big, while bounded pieces (lookups, lists, scans) are well within reach. That's what skill checks and `ask_local` are for.
-- **Some past jobs can't be replayed**, for example ones that edited files, used a browser, ran tests, read files that were never committed, or whose repo is gone. They're skipped, never failed. `htd gold` shows how many can be replayed.
+- **Some past jobs can't be replayed**, for example ones that edited files, used a browser, ran tests, read files that were never committed, or whose repo is gone. They're skipped, never failed. `htd gold` shows how many can be replayed. With snapshots on (`htd hooks on`), jobs from then on that read uncommitted files can be replayed too.
 - **Thinking models** (`<think>…</think>`, `reasoning_content`) work; reasoning is stripped before grading.
 - **Slow local models.** Each replay has a 20-minute limit and each skill check 5 minutes; a timeout counts as a fail. `htd replay` and `htd bench` keep your Mac awake while they run.
 - **Server problems aren't counted against the model.** A crash or restart is waited out and that job is skipped.
+- **Low memory pauses a run.** Before each job or check, `htd replay` and `htd bench` check your machine's memory; when it's low they wait up to 10 minutes for it to recover, then stop (finished work is kept). A local model server that grows with use is the usual cause: restart it or lower its memory limit.
 - **Two htd commands at once** take turns on the local model, one request at a time. An `ask_local` call from Claude goes first; if the model stays busy, Claude is told so and does the task itself.
 - **Cloud models served through a local URL** (e.g. Ollama `:cloud`) are refused: they aren't local.
 

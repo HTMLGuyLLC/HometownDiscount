@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/claudesettings"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/config"
 )
 
@@ -247,7 +248,7 @@ func TestSetupReportsTheSpendMap(t *testing.T) {
 
 	out := setup(t, "none\n")
 
-	if !strings.Contains(out, "1/2 Your spend map ..... 1 subagent jobs in 30 days") {
+	if !strings.Contains(out, "1/3 Your spend map ..... 1 subagent jobs in 30 days") {
 		t.Errorf("want the job counted in the spend map line:\n%s", out)
 	}
 }
@@ -301,5 +302,36 @@ func TestSetupAsksAgainForABadModelNumber(t *testing.T) {
 	out = setup(t, srv.URL+"\n5\nx\n0\n")
 	if cfg := savedConfig(t, home); len(cfg.Local) != 0 {
 		t.Errorf("three bad answers should pick nothing, got %+v\n%s", cfg.Local, out)
+	}
+}
+
+// With a local model set, the wizard offers snapshots: Enter turns them on
+// (htd's hook in Claude Code's settings), "n" leaves the settings alone, and
+// a later run just says they're on.
+func TestSetupOffersSnapshots(t *testing.T) {
+	_, claude := hermetic(t)
+	settings := filepath.Join(claude, "settings.json")
+	srv := newFakeServer(t, modelList("alpha-4bit"), healthyModel)
+
+	out := setup(t, srv.URL+"\nn\n")
+	if !strings.Contains(out, "3/3 Snapshots") {
+		t.Errorf("snapshots not offered:\n%s", out)
+	}
+	if _, err := os.Stat(settings); err == nil {
+		t.Error("\"n\" must not touch Claude Code's settings")
+	}
+
+	out = setup(t, srv.URL+"\n\n")
+	if on, _ := claudesettings.Has(settings, "PreToolUse", isSnapshotHook); !on || !strings.Contains(out, "Snapshots are on") {
+		t.Errorf("Enter should turn snapshots on:\n%s", out)
+	}
+	if out = setup(t, srv.URL+"\n"); !strings.Contains(out, "3/3 Snapshots .......... on") {
+		t.Errorf("a later run should just say they're on:\n%s", out)
+	}
+
+	// No local model: replays can't run, so snapshots aren't offered.
+	hermetic(t)
+	if out := setup(t, "none\n"); strings.Contains(out, "3/3") {
+		t.Errorf("snapshots offered without a model:\n%s", out)
 	}
 }

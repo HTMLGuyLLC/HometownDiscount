@@ -85,7 +85,7 @@ func runRegrade(args []string, stdout, stderr io.Writer) error {
 		if r.Type == jobtype.Research && recording.Complete(it.Web) {
 			rec = recording.New(it.Web)
 		}
-		ws, err := workspace.Prepare(ctx, it, j.Start, cache, filepath.Join(jobDir, "ws"))
+		ws, err := workspace.Prepare(ctx, it, jobFrom(j), cache, filepath.Join(jobDir, "ws"))
 		switch {
 		case r.Type == jobtype.Research && rec == nil:
 			applyGrade(&next, grade.Result{Reason: "incomplete recording"})

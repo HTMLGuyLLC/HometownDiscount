@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/goldset"
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/snapshot"
 )
 
 // gitRepo makes a repo with two commits: config.go at day 1, changed at day 3.
@@ -55,7 +56,7 @@ func TestPrepare(t *testing.T) {
 	}
 	start := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC) // between the two commits
 	cache := t.TempDir()
-	ws, err := Prepare(context.Background(), it, start, cache, filepath.Join(t.TempDir(), "job1"))
+	ws, err := Prepare(context.Background(), it, From{Start: start}, cache, filepath.Join(t.TempDir(), "job1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +80,7 @@ func TestPrepare(t *testing.T) {
 
 	// A partial read that doesn't match the base breaks fidelity.
 	it.Reads = []goldset.FileRead{{Path: filepath.Join(repo, "big.go"), Lines: map[int]string{2: "changed"}}}
-	ws2, err := Prepare(context.Background(), it, start, cache, filepath.Join(t.TempDir(), "job2"))
+	ws2, err := Prepare(context.Background(), it, From{Start: start}, cache, filepath.Join(t.TempDir(), "job2"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +93,7 @@ func TestPrepare(t *testing.T) {
 	// was never committed can't be read in a replay.
 	it.Reads = nil
 	it.Named = []string{filepath.Join(repo, "config.go"), filepath.Join(repo, "docs", "plan.md")}
-	ws3, err := Prepare(context.Background(), it, start, cache, filepath.Join(t.TempDir(), "job3"))
+	ws3, err := Prepare(context.Background(), it, From{Start: start}, cache, filepath.Join(t.TempDir(), "job3"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +104,7 @@ func TestPrepare(t *testing.T) {
 }
 
 func TestPrepareNoRepo(t *testing.T) {
-	_, err := Prepare(context.Background(), &goldset.Item{Cwd: t.TempDir()}, time.Now(), t.TempDir(), filepath.Join(t.TempDir(), "x"))
+	_, err := Prepare(context.Background(), &goldset.Item{Cwd: t.TempDir()}, From{Start: time.Now()}, t.TempDir(), filepath.Join(t.TempDir(), "x"))
 	if err != ErrNoRepo {
 		t.Errorf("err = %v, want ErrNoRepo", err)
 	}
@@ -160,7 +161,7 @@ func TestOverlayCantEscapeThroughSymlinks(t *testing.T) {
 	it := &goldset.Item{Cwd: repo, GitBranch: "--output=/tmp/pwned", Reads: []goldset.FileRead{
 		{Path: filepath.Join(repo, "link", "victim.txt"), Full: true, Lines: map[int]string{1: "overwritten"}},
 	}}
-	ws, err := Prepare(context.Background(), it, time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC), t.TempDir(), filepath.Join(t.TempDir(), "job"))
+	ws, err := Prepare(context.Background(), it, From{Start: time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)}, t.TempDir(), filepath.Join(t.TempDir(), "job"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,5 +186,50 @@ func TestWriteLinesCap(t *testing.T) {
 	}
 	if err := writeLines(dir, "b.go", map[int]string{1: "package b", 3: "func B() {}"}); err != nil {
 		t.Errorf("a normal file: %v", err)
+	}
+}
+
+// A job that named an uncommitted file and read part of an uncommitted
+// change can't be rebuilt from commits alone; with the snapshot taken as it
+// started, it can.
+func TestPrepareWithSnapshot(t *testing.T) {
+	repo := gitRepo(t)
+	repo, _ = filepath.EvalSymlinks(repo)
+	os.WriteFile(filepath.Join(repo, "notes.md"), []byte("# Notes\n"), 0o644)                   // new, uncommitted
+	os.WriteFile(filepath.Join(repo, "big.go"), []byte("line1\nline2 changed\nline3\n"), 0o644) // changed, uncommitted
+	snaps := snapshot.Open(t.TempDir())
+	start := time.Now()
+	if _, err := snaps.Take(context.Background(), repo, "sess", start.Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	it := &goldset.Item{
+		Cwd:   repo,
+		Reads: []goldset.FileRead{{Path: filepath.Join(repo, "big.go"), Lines: map[int]string{2: "line2 changed"}}},
+		Named: []string{filepath.Join(repo, "notes.md")},
+	}
+
+	ws, err := Prepare(context.Background(), it, From{Start: start, Session: "sess"}, t.TempDir(), filepath.Join(t.TempDir(), "plain"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws.Fidelity.OK() || ws.Fidelity.Snapshot {
+		t.Errorf("without a snapshot the job can't be rebuilt: %+v", ws.Fidelity)
+	}
+
+	ws, err = Prepare(context.Background(), it, From{Start: start, Session: "sess", Snapshots: snaps}, t.TempDir(), filepath.Join(t.TempDir(), "snap"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ws.Fidelity.OK() || !ws.Fidelity.Snapshot {
+		t.Errorf("with the snapshot it should be faithful: %+v", ws.Fidelity)
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws.Root, "notes.md")); string(b) != "# Notes\n" {
+		t.Errorf("notes.md = %q", b)
+	}
+
+	// Another session's snapshot isn't this job's.
+	ws, _ = Prepare(context.Background(), it, From{Start: start, Session: "other", Snapshots: snaps}, t.TempDir(), filepath.Join(t.TempDir(), "other"))
+	if ws.Fidelity.Snapshot {
+		t.Error("used another session's snapshot")
 	}
 }

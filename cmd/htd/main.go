@@ -30,6 +30,7 @@ Usage:
   htd replay [--max N]               Replay your past jobs on the local model and grade each one
   htd mcp                            MCP server: Claude hands proven small tasks to your local model (claude mcp add htd -- htd mcp)
   htd card                           What the local model has earned: proven, learning or not good enough
+  htd hooks [on|off]                 Snapshots: save uncommitted files as subagents start, so replays see what each job saw
   htd forget [--all]                 Delete what htd stored in ~/.htd (--all also deletes your settings)
   htd version                        Print the version
 
@@ -73,6 +74,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runRegrade(args[1:], stdout, stderr)
 	case "card":
 		return runCard(args[1:], stdout, stderr)
+	case "hooks":
+		return runHooks(args[1:], stdout, stderr)
+	case "snapshot":
+		return runSnapshot(os.Stdin)
 	case "version", "--version", "-v":
 		fmt.Fprintln(stdout, "htd", version)
 		return nil

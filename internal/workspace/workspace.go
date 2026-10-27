@@ -1,9 +1,11 @@
 // Package workspace rebuilds the repo a past job saw, so a cheaper model can
 // replay the job on the same files.
 //
-// The base is the last commit at or before the job started. Every file the
-// job read in full is restored from the transcript, which brings back
-// uncommitted changes. Partial reads must match the base on the lines seen.
+// The base is the commit checked out when the job started, with the
+// uncommitted files saved then (see package snapshot), or without a
+// snapshot the last commit before the job. Every file the job read in full
+// is restored from the transcript, which brings back uncommitted changes.
+// Partial reads must match the base on the lines seen.
 package workspace
 
 import (
@@ -21,6 +23,7 @@ import (
 	"time"
 
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/goldset"
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/snapshot"
 )
 
 // Workspace is a replay copy of a repo.
@@ -36,6 +39,7 @@ type Workspace struct {
 
 // Fidelity says how faithfully the workspace matches what the job saw.
 type Fidelity struct {
+	Snapshot   bool     // uncommitted files saved when the job started were restored
 	Restored   int      // full reads written over the base
 	Mismatched []string // partial reads that differ from the base
 	Outside    []string // reads outside the repo (can't be restored)
@@ -53,12 +57,28 @@ func (f Fidelity) OK() bool {
 // ErrNoRepo means the job's folder is gone or isn't a git repo.
 var ErrNoRepo = errors.New("job folder is not an available git repo")
 
+// From is what's known about a job beyond its transcript's contents.
+type From struct {
+	Start     time.Time       // when the job started
+	Session   string          // its Claude Code session
+	Snapshots *snapshot.Store // uncommitted files saved as jobs started; nil for none
+}
+
 // Prepare builds a workspace for one job under dir. The base commit is
 // checked out once per repo and commit into cacheDir and cloned from there.
-func Prepare(ctx context.Context, it *goldset.Item, start time.Time, cacheDir, dir string) (*Workspace, error) {
+func Prepare(ctx context.Context, it *goldset.Item, from From, cacheDir, dir string) (*Workspace, error) {
+	start := from.Start
 	repoRoot, err := git(ctx, it.Cwd, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return nil, ErrNoRepo
+	}
+	var snap *snapshot.Manifest
+	if from.Snapshots != nil {
+		if m, ok := from.Snapshots.Find(repoRoot, from.Session, start); ok {
+			if _, err := git(ctx, repoRoot, "cat-file", "-e", m.Head+"^{commit}"); err == nil {
+				snap = m // its commit may be gone, e.g. after a rebase
+			}
+		}
 	}
 	// The branch name comes from a transcript: never let it be read as a
 	// git option.
@@ -68,6 +88,9 @@ func Prepare(ctx context.Context, it *goldset.Item, start time.Time, cacheDir, d
 	}
 	before := "--before=" + start.UTC().Format(time.RFC3339)
 	commit, err := git(ctx, repoRoot, "rev-list", "-1", before, "--end-of-options", ref)
+	if snap != nil {
+		commit, err = snap.Head, nil
+	}
 	if err != nil || !sha.MatchString(commit) {
 		// The branch may be gone; fall back to any commit before the job.
 		commit, err = git(ctx, repoRoot, "rev-list", "-1", before, "--all")
@@ -87,6 +110,12 @@ func Prepare(ctx context.Context, it *goldset.Item, start time.Time, cacheDir, d
 	}
 
 	ws := &Workspace{Root: dir, RepoRoot: repoRoot, Commit: commit}
+	if snap != nil {
+		if err := from.Snapshots.Restore(snap, dir); err != nil {
+			return nil, err
+		}
+		ws.Fidelity.Snapshot = true
+	}
 	for _, r := range it.Reads {
 		rel, ok := ws.repoRel(r.Path)
 		if !ok {

@@ -19,7 +19,7 @@ func seedHome(t *testing.T, home string) {
 			t.Fatal(err)
 		}
 	}
-	for _, d := range []string{"answers/abc", "cache/base-1"} {
+	for _, d := range []string{"answers/abc", "cache/base-1", "snapshots/blobs"} {
 		if err := os.MkdirAll(filepath.Join(home, d), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -45,7 +45,7 @@ func TestForgetDeletesWhatHtdStoredButKeepsSettings(t *testing.T) {
 
 	out := forget(t, "y\n")
 
-	for _, gone := range []string{"runs.jsonl", "delegations.jsonl", "answers", "cache"} {
+	for _, gone := range []string{"runs.jsonl", "delegations.jsonl", "answers", "cache", "snapshots"} {
 		if exists(filepath.Join(home, gone)) {
 			t.Errorf("%s should be deleted", gone)
 		}
@@ -55,7 +55,7 @@ func TestForgetDeletesWhatHtdStoredButKeepsSettings(t *testing.T) {
 			t.Errorf("%s must be kept without --all", kept)
 		}
 	}
-	if !strings.Contains(out, "Delete runs.jsonl, answers, delegations.jsonl, cache from "+home+"? [y/N]") || !strings.Contains(out, "Deleted.") {
+	if !strings.Contains(out, "Delete runs.jsonl, answers, delegations.jsonl, cache, snapshots from "+home+"? [y/N]") || !strings.Contains(out, "Deleted.") {
 		t.Errorf("output:\n%s", out)
 	}
 }
@@ -116,7 +116,7 @@ func TestForgetAllPromptNamesConfig(t *testing.T) {
 
 	out := forget(t, "n\n", "--all")
 
-	if !strings.Contains(out, "Delete runs.jsonl, answers, delegations.jsonl, cache, config.toml from ") {
+	if !strings.Contains(out, "Delete runs.jsonl, answers, delegations.jsonl, cache, snapshots, config.toml from ") {
 		t.Errorf("output:\n%s", out)
 	}
 	if !exists(config.Path(home)) {

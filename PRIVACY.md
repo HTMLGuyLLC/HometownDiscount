@@ -5,7 +5,7 @@ Hometown Discount runs entirely on your computer. It has no servers, no accounts
 ## What it reads
 
 - **Your Claude Code transcripts** in `~/.claude/projects` (or `$CLAUDE_CONFIG_DIR/projects`): to build the spend map, to find past jobs to replay, and to time how long Claude takes to answer (for the speed limits). They're read, never changed.
-- **Your repos**, at the commits your past jobs saw: to rebuild a copy for each replay and to generate skill checks.
+- **Your repos**, at the commits your past jobs saw: to rebuild a copy for each replay and to generate skill checks. With snapshots on, also their uncommitted files, each time Claude starts a subagent.
 - **Your local model server**, at the URL you give it.
 
 ## What it sends, and where
@@ -24,8 +24,9 @@ Everything lives in `~/.htd` (or `$HTD_HOME`), readable only by your user accoun
 | `answers/` | Each answer next to the expected one (from Claude, or computed for skill checks), so you can check the grading by hand. These can contain code and text from your projects. |
 | `delegations.jsonl` | One line per `ask_local` call: skill, size, outcome, timing. No file contents. |
 | `cache/` | Temporary repo copies during a replay, deleted when it ends; `claude-speed.json`, Claude's median answer times by file size (numbers only) |
+| `snapshots/` | Only when snapshots are on (`htd hooks on`, offered by `htd setup`): your repos' uncommitted text files, saved each time Claude starts a subagent so a replay can rebuild what the job saw. Files that look like secrets (the same list as below), files git ignores, binary files and files over 1 MB are left out. Kept 60 days. |
 
-Delete it all with `htd forget --all`, or everything except your settings with `htd forget`.
+Delete it all with `htd forget --all`, or everything except your settings with `htd forget`. `htd hooks off` stops new snapshots; `htd forget --all` also removes htd's hook from Claude Code's settings.
 
 ## Secrets
 
