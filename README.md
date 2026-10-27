@@ -4,7 +4,7 @@
 
 *Stop paying out-of-state fees for work your hometown can handle.* Your local models get the hometown rate; Claude is the out-of-state trip.
 
-> 🚧 **v0.1, an early preview.** It works end to end; build it from source (see [Install](#install-and-set-up)). Expect rough edges.
+> 🚧 **v0.1, an early preview.** It works end to end on macOS and Linux (see [Install](#install-and-set-up)). Expect rough edges.
 
 Free and source-available ([license](#license)) · `htd` on the command line · $0 extra by default · nothing leaves your machine.
 
@@ -26,7 +26,16 @@ Grading is mechanical (no AI judges another AI), so the same answer always gets 
 
 ## Install and set up
 
-Build from source (Go 1.25 or newer):
+Download it for your Mac or Linux machine (it picks the right file for your computer):
+
+```bash
+curl -fsSL "https://github.com/HTMLGuyLLC/HometownDiscount/releases/latest/download/htd_$(uname -s | tr A-Z a-z)_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar -xz htd
+sudo mv htd /usr/local/bin/
+```
+
+Or pick a file on the [releases page](https://github.com/HTMLGuyLLC/HometownDiscount/releases); `SHA256SUMS` there lets you check the download. If macOS blocks a file you downloaded in a browser, run `xattr -d com.apple.quarantine htd` once.
+
+Or build from source (Go 1.25 or newer):
 
 ```bash
 git clone https://github.com/HTMLGuyLLC/HometownDiscount && cd HometownDiscount
