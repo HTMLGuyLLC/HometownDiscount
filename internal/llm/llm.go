@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/localhttp"
 )
 
 // Message is one chat message.
@@ -64,7 +66,7 @@ func New(baseURL, model string) *Client {
 		BaseURL:   strings.TrimRight(baseURL, "/"),
 		Model:     model,
 		MaxTokens: 8192,
-		HTTP:      &http.Client{Timeout: 10 * time.Minute},
+		HTTP:      localhttp.Client(10 * time.Minute),
 	}
 }
 

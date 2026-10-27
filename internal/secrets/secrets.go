@@ -7,7 +7,13 @@ import (
 	"regexp"
 )
 
-var names = regexp.MustCompile(`(?i)(^|/)(\.env(\..*)?|\.envrc|\.npmrc|\.netrc|\.pgpass|\.git-credentials|\.pypirc|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|credentials(\.json)?|secrets?\.(json|ya?ml|toml)|service-account.*\.json)$|\.(pem|key|p12|pfx|keystore|jks|tfvars|tfstate)$|(^|/)\.git/|(^|/)\.ssh/|(^|/)\.aws/`)
+var names = regexp.MustCompile(`(?i)` +
+	// files by name
+	`(^|/)(\.env(\..*)?|\.envrc|\.npmrc|\.netrc|\.pgpass|\.git-credentials|\.pypirc|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|\.?credentials(\.json|\.tfrc\.json)?|secrets?\.(json|ya?ml|toml)|service-account.*\.json|\.claude\.json|settings\.local\.json|\.[a-z_]*_history|hosts\.ya?ml)$` +
+	// files by extension
+	`|\.(pem|key|p12|pfx|keystore|jks|tfvars|tfstate)$` +
+	// folders that hold credentials or config with tokens
+	`|(^|/)\.(git|ssh|aws|gnupg|kube|azure)/|(^|/)\.docker/config\.json$|(^|/)\.config/gcloud/`)
 
 // Sensitive reports whether a repo-relative path looks like it holds secrets.
 func Sensitive(rel string) bool {

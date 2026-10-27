@@ -102,7 +102,7 @@ func TestCall(t *testing.T) {
 	if out := call(h, `{"task":"list","files":["a.go"],"skill":"list"}`); !strings.HasPrefix(out, "Not handed to the local model") {
 		t.Errorf("unproven skill should be refused: %q", out)
 	}
-	if out := call(h, `{"task":"x","files":["../secret.txt"],"skill":"lookup"}`); !strings.Contains(out, "can't read") {
+	if out := call(h, `{"task":"x","files":["../secret.txt"],"skill":"lookup"}`); !strings.Contains(out, "outside the project") {
 		t.Errorf("escape should fail: %q", out)
 	}
 	if out := call(h, `{"task":"x","files":["/etc/hosts"],"skill":"lookup"}`); !strings.Contains(out, "outside the project") {
@@ -116,6 +116,17 @@ func TestCall(t *testing.T) {
 	if out := call(h, `{"task":"x","files":["notes.txt"],"skill":"lookup"}`); !strings.Contains(out, "links to a file") {
 		t.Errorf("a link to .env should be refused: %q", out)
 	}
+	// A chain of links, and a linked folder, lead to secrets just the same.
+	os.Symlink("notes.txt", filepath.Join(h.Root, "chain.txt"))
+	if out := call(h, `{"task":"x","files":["chain.txt"],"skill":"lookup"}`); !strings.Contains(out, "links to a file") {
+		t.Errorf("a chain ending at .env should be refused: %q", out)
+	}
+	os.MkdirAll(filepath.Join(h.Root, ".git"), 0o755)
+	os.WriteFile(filepath.Join(h.Root, ".git", "config"), []byte("[remote]\nurl = https://token@example.com"), 0o644)
+	os.Symlink(".git", filepath.Join(h.Root, "d"))
+	if out := call(h, `{"task":"x","files":["d/config"],"skill":"lookup"}`); !strings.Contains(out, "links to a file") {
+		t.Errorf("a linked folder into .git should be refused: %q", out)
+	}
 	if out := call(h, `{"files":["a.go"]}`); !strings.Contains(out, "needs a task") {
 		t.Errorf("missing task: %q", out)
 	}
@@ -123,7 +134,7 @@ func TestCall(t *testing.T) {
 	for _, d := range *log {
 		outcomes = append(outcomes, d.Outcome)
 	}
-	if strings.Join(outcomes, ",") != "answered,refused,error,error,error,error" {
+	if strings.Join(outcomes, ",") != "answered,refused,error,error,error,error,error,error" {
 		t.Errorf("log outcomes = %v", outcomes)
 	}
 	if (*log)[0].Bytes == 0 || (*log)[0].Size != "small" {

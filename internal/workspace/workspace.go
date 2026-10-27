@@ -316,12 +316,19 @@ func (w *Workspace) loadContents() {
 	})
 }
 
+// maxRestoreLines caps the line numbers a transcript can make a restored
+// file reach: a made-up line number in the billions would fill memory.
+const maxRestoreLines = 200_000
+
 // writeLines restores a file inside the workspace through os.Root, so a
 // symlink in the repo can't redirect the write outside the copy.
 func writeLines(dir, rel string, lines map[int]string) error {
 	maxN := 0
 	for n := range lines {
 		maxN = max(maxN, n)
+	}
+	if maxN > maxRestoreLines {
+		return fmt.Errorf("%s: line %d is past the %d lines a restored file may have", rel, maxN, maxRestoreLines)
 	}
 	var b strings.Builder
 	for n := 1; n <= maxN; n++ {

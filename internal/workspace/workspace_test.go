@@ -175,3 +175,15 @@ func TestOverlayCantEscapeThroughSymlinks(t *testing.T) {
 		t.Error("a branch name was run as a git option")
 	}
 }
+
+// A made-up line number far past any real file is refused, not written out
+// line by line until memory runs out.
+func TestWriteLinesCap(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeLines(dir, "a.go", map[int]string{9_000_000_000: "x"}); err == nil {
+		t.Error("want an error for a line number past the cap")
+	}
+	if err := writeLines(dir, "b.go", map[int]string{1: "package b", 3: "func B() {}"}); err != nil {
+		t.Errorf("a normal file: %v", err)
+	}
+}

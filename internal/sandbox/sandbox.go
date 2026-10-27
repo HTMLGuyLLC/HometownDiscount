@@ -10,11 +10,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -34,6 +36,14 @@ const MaxOutput = 30_000
 
 // maxFileKB caps any single file a command writes in the scratch folder.
 const maxFileKB = 100 * 1024
+
+// maxScratchBytes caps the whole scratch folder: a command that writes past
+// it is stopped and the folder emptied, so a looping command can't fill the
+// disk. Tests lower it.
+var maxScratchBytes int64 = 512 << 20
+
+// scratchFull is the note a stopped command gets.
+const scratchFull = "[stopped: the scratch folder passed its size limit and was emptied]"
 
 // Available reports whether commands can be sandboxed here.
 func Available() error {
@@ -115,10 +125,21 @@ func Run(ctx context.Context, dir, tmp, command string, timeout time.Duration) (
 	cmd.WaitDelay = 2 * time.Second // don't wait on pipes held by leftovers
 	stdout, stderr := &capped{}, &capped{}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
-	runErr := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return Result{}, err
+	}
+	full := watchScratch(ctx, tmp, cmd)
+	runErr := cmd.Wait()
 	killGroup(cmd) // leftovers from `cmd &`
 
 	res := Result{Stdout: stdout.String(), Stderr: stderr.String()}
+	if full() {
+		os.RemoveAll(tmp)
+		os.MkdirAll(tmp, 0o700)
+		res.Stderr += "\n" + scratchFull
+		res.ExitCode = 1
+		return res, nil
+	}
 	if ctx.Err() == context.DeadlineExceeded {
 		res.TimedOut = true
 		res.ExitCode = -1
@@ -134,6 +155,57 @@ func Run(ctx context.Context, dir, tmp, command string, timeout time.Duration) (
 		return res, runErr
 	}
 	return res, nil
+}
+
+// watchScratch checks the scratch folder's size twice a second while cmd
+// runs, and stops cmd once it's over the limit. The returned func reports
+// whether that happened.
+func watchScratch(ctx context.Context, tmp string, cmd *exec.Cmd) func() bool {
+	var over atomic.Bool
+	done := make(chan struct{})
+	go func() {
+		t := time.NewTicker(500 * time.Millisecond)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-done:
+				return
+			case <-t.C:
+				if dirSize(tmp, maxScratchBytes) > maxScratchBytes {
+					over.Store(true)
+					killGroup(cmd)
+					if cmd.Process != nil {
+						cmd.Process.Kill()
+					}
+					return
+				}
+			}
+		}
+	}()
+	return func() bool {
+		close(done)
+		return over.Load() || dirSize(tmp, maxScratchBytes) > maxScratchBytes
+	}
+}
+
+// dirSize adds up file sizes under dir, stopping early once past limit.
+func dirSize(dir string, limit int64) int64 {
+	var total int64
+	filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if info, err := d.Info(); err == nil {
+			total += info.Size()
+		}
+		if total > limit {
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return total
 }
 
 func canonical(p string) (string, error) {
@@ -189,28 +261,40 @@ func seatbeltProfile(dir, tmp string) string {
 		`(deny mach-lookup)`,                   // no system services: clipboard, app launching, keychain
 		`(deny process-info* (target others))`, // can't read other processes' arguments or environment
 		`(deny signal (target others))`,        // can't kill or signal other processes
+		`(deny ipc-posix-shm* ipc-sysv*)`,      // no shared memory or semaphores with other processes
+		`(deny iokit-open)`,                    // no hardware devices
 		`(deny process-exec (literal "/usr/bin/open") (literal "/usr/bin/osascript") (literal "/usr/bin/pbcopy") (literal "/usr/bin/pbpaste"))`,
 		`(deny file-write*)`,
 		`(allow file-write* (literal "/dev/null") (literal "/dev/dtracehelper"))`,
-		`(deny file-read* (subpath "/Users") (subpath ` + q(home) + `) (subpath "/Volumes") (subpath "/private/tmp") (subpath "/private/var/folders") (subpath "/private/var/tmp") (subpath "/private/var/log") (subpath "/Library/Keychains") (subpath "/Library/Preferences") (subpath "/opt/homebrew/etc") (subpath "/usr/local/etc"))`,
+		`(deny file-read* (subpath "/Users") (subpath ` + q(home) + `) (subpath "/Volumes") (subpath "/private/tmp") (subpath "/private/var/folders") (subpath "/private/var/tmp") (subpath "/private/var/log") (subpath "/Library/Keychains") (subpath "/Library/Preferences") (subpath "/opt/homebrew/etc") (subpath "/usr/local/etc") (subpath "/opt/homebrew/var") (subpath "/usr/local/var") (subpath "/Library/Application Support"))`,
 		`(allow file-read-metadata)`, // stat only (ls -la needs ".."): no file contents, no folder listings
 		`(allow file-read* (subpath ` + q(dir) + `) (subpath ` + q(tmp) + `))`,
 		`(allow file-write* (subpath ` + q(tmp) + `))`,
 	}, "\n")
 }
 
-// bwrapArgs mounts the system read-only, hides homes, temp folders and
-// runtime sockets, binds the workspace read-only and the scratch folder
-// read-write, and unshares the network and everything else it can.
+// systemDirs are the only host folders a replayed command sees on Linux: the
+// programs, libraries and settings a shell command needs. Everything else
+// (/var, /run, /home, /srv...) is absent, so the Unix sockets that live
+// there, such as container, package-manager and database daemons, can't be
+// reached: a socket blocks nothing on connect just for being read-only.
+var systemDirs = []string{"/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc", "/opt", "/nix/store"}
+
+// bwrapArgs builds an empty root with the system folders read-only, the
+// workspace read-only and the scratch folder read-write, and unshares the
+// network and everything else it can.
 func bwrapArgs(dir, tmp, script string) []string {
-	args := []string{"--ro-bind", "/", "/"}
-	hide := []string{"/home", "/root", "/tmp", "/var/tmp", "/run", "/mnt", "/media", "/srv"}
-	if home, err := os.UserHomeDir(); err == nil && home != "" && home != "/" {
-		hide = append(hide, home) // e.g. /var/home on Fedora Silverblue
-	}
-	for _, p := range hide {
-		if st, err := os.Lstat(p); err == nil && st.IsDir() {
-			args = append(args, "--tmpfs", p)
+	var args []string
+	for _, p := range systemDirs {
+		st, err := os.Lstat(p)
+		switch {
+		case err != nil:
+		case st.Mode()&os.ModeSymlink != 0: // merged /usr: /bin -> usr/bin
+			if target, err := os.Readlink(p); err == nil {
+				args = append(args, "--symlink", target, p)
+			}
+		case st.IsDir():
+			args = append(args, "--ro-bind", p, p)
 		}
 	}
 	return append(args,

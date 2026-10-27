@@ -301,6 +301,10 @@ func (h *Handler) read(files []string) (string, int, int, error) {
 		return "", 0, 0, err
 	}
 	defer root.Close()
+	rootReal, err := filepath.EvalSymlinks(h.Root)
+	if err != nil {
+		rootReal = h.Root
+	}
 	sorted := append([]string(nil), files...)
 	sort.Strings(sorted)
 	var b strings.Builder
@@ -317,11 +321,15 @@ func (h *Handler) read(files []string) (string, int, int, error) {
 		if secrets.Sensitive(rel) {
 			return "", 0, 0, fmt.Errorf("%s looks like secrets or credentials; ask_local won't read it", f)
 		}
-		// A link inside the project can point at a secrets file under
-		// another name: check where it leads too.
-		if lst, err := root.Lstat(rel); err == nil && lst.Mode()&os.ModeSymlink != 0 {
-			target, err := root.Readlink(rel)
-			if err != nil || secrets.Sensitive(target) || secrets.Sensitive(filepath.Join(filepath.Dir(rel), target)) {
+		// A link can lead to a secrets file under another name, directly,
+		// through a chain or through a linked folder: check where the
+		// whole path really leads.
+		if real, err := filepath.EvalSymlinks(filepath.Join(h.Root, rel)); err == nil {
+			r, err := filepath.Rel(rootReal, real)
+			if err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+				return "", 0, 0, fmt.Errorf("%s leads outside the project", f)
+			}
+			if secrets.Sensitive(r) {
 				return "", 0, 0, fmt.Errorf("%s links to a file ask_local won't read", f)
 			}
 		}

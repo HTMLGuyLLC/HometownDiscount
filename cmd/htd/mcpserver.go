@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/config"
@@ -46,14 +48,47 @@ func runMCP(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	h.h.Log = func(d delegate.Delegation) { st.LogJSON("delegations.jsonl", d) }
 	home, _ := os.UserHomeDir()
 	switch {
-	case root == "/" || root == home:
-		h.h.Setup = fmt.Errorf("htd mcp started in %s; add it from a project folder so only that project's files can be read", root)
+	case unsafeRoot(root, home) != "":
+		h.h.Setup = fmt.Errorf("htd mcp started in %s, %s; start Claude in a project folder so only that project's files can be read", root, unsafeRoot(root, home))
 	case len(cfg.Local) == 0:
 		h.h.Setup = fmt.Errorf("no local model configured; run `htd setup`")
 	default:
 		h.connect()
 	}
 	return mcp.Serve(context.Background(), stdin, stdout, mcp.Info{Name: "hometown-discount", Version: version}, h)
+}
+
+// unsafeRoot says why ask_local can't serve files from root, or "" when it
+// can. The home folder, every folder above it, and the hidden folders in it
+// (~/.claude, ~/.ssh, ~/.aws...) hold credentials and other projects' files.
+func unsafeRoot(root, home string) string {
+	real := func(p string) string {
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			return r
+		}
+		return filepath.Clean(p)
+	}
+	root = real(root)
+	sep := string(filepath.Separator)
+	if root == sep {
+		return "the top of the disk"
+	}
+	if home == "" {
+		return ""
+	}
+	home = real(home)
+	switch {
+	case root == home:
+		return "your home folder"
+	case strings.HasPrefix(home, root+sep):
+		return "a folder that holds your home folder"
+	}
+	if rel, err := filepath.Rel(home, root); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+sep) {
+		if top := strings.Split(rel, sep)[0]; strings.HasPrefix(top, ".") {
+			return "a hidden folder in your home folder (" + top + ")"
+		}
+	}
+	return ""
 }
 
 // connect probes the configured server. If the server is down when Claude
@@ -75,7 +110,7 @@ func (r *refreshing) connect() {
 	r.h.Label = rung.Label()
 	// Wait up to 2 minutes for a replay or skill check to finish; after
 	// that, tell Claude the model is busy.
-	r.h.Client = slot.Locked{Inner: llm.New(l.URL, modelID), Dir: r.dir, Wait: 2 * time.Minute}
+	r.h.Client = slot.Locked{Inner: llm.New(srv.URL, modelID), Dir: r.dir, Wait: 2 * time.Minute} // the cleaned URL: no credentials
 }
 
 // refreshing re-reads the evidence, the speed settings and Claude's times

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -60,7 +61,7 @@ func TestCanaries(t *testing.T) {
 			}
 		}
 	}
-	for _, p := range []string{"/private/var/tmp", "/private/var/log", "/Library/Preferences"} {
+	for _, p := range []string{"/private/var/tmp", "/private/var/log", "/Library/Preferences", "/opt/homebrew/var", "/Library/Application Support"} {
 		if _, err := os.Stat(p); err == nil {
 			if r := run("ls " + p); r.ExitCode == 0 {
 				t.Errorf("listed %s: %+v", p, r)
@@ -69,6 +70,17 @@ func TestCanaries(t *testing.T) {
 	}
 	if r := run("curl -s -m 5 https://example.com >/dev/null"); r.ExitCode == 0 {
 		t.Errorf("network was reachable: %+v", r)
+	}
+	if runtime.GOOS == "linux" {
+		// Only system folders are mounted: /var and /run, where daemon
+		// sockets live, aren't there at all.
+		if r := run("ls /var /run"); r.ExitCode == 0 {
+			t.Errorf("/var or /run is visible: %+v", r)
+		}
+	}
+	// The tools replayed jobs use still work.
+	if r := run(`grep -c hello inside.txt && find . -name '*.txt' | wc -l && sed -n 1p inside.txt && awk 'END { print NR }' inside.txt && ls -la >/dev/null`); r.ExitCode != 0 || strings.Fields(r.Stdout)[0] != "1" {
+		t.Errorf("everyday tools failed: %+v", r)
 	}
 	if r := run("echo hi > /dev/tty"); r.ExitCode == 0 {
 		t.Error("the sandbox must not reach a terminal")
@@ -115,5 +127,32 @@ func TestPreflight(t *testing.T) {
 	}
 	if err := Preflight(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A command that keeps writing is stopped once the scratch folder passes its
+// limit, and the folder is emptied, so it can't fill the disk.
+func TestScratchLimit(t *testing.T) {
+	if err := Available(); err != nil {
+		t.Skip(err)
+	}
+	defer func(n int64) { maxScratchBytes = n }(maxScratchBytes)
+	maxScratchBytes = 1 << 20
+	base := t.TempDir()
+	ws, tmp := filepath.Join(base, "ws"), filepath.Join(base, "tmp")
+	os.MkdirAll(ws, 0o755)
+	start := time.Now()
+	r, err := Run(context.Background(), ws, tmp, `i=0; while :; do i=$((i+1)); head -c 100000 /dev/zero > "$TMPDIR/f$i"; done`, 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(r.Stderr, scratchFull) || r.TimedOut || time.Since(start) > 10*time.Second {
+		t.Errorf("want a quick stop at the limit, got %+v after %v", r, time.Since(start))
+	}
+	if n := dirSize(tmp, 1<<40); n != 0 {
+		t.Errorf("scratch folder should be emptied, has %d bytes", n)
+	}
+	if r, _ := Run(context.Background(), ws, tmp, `echo ok > "$TMPDIR/a" && cat "$TMPDIR/a"`, 10*time.Second); strings.TrimSpace(r.Stdout) != "ok" {
+		t.Errorf("the next command should work normally: %+v", r)
 	}
 }

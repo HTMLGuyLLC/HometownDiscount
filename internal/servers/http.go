@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/localhttp"
 )
 
 const (
@@ -17,8 +19,9 @@ const (
 	maxBody      = 16 << 20
 )
 
-// client sends every request. Tests swap it to fake remote hosts.
-var client = &http.Client{}
+// client sends every request: no proxy, no redirects to another host. Tests
+// swap it to fake remote hosts.
+var client = localhttp.Client(0)
 
 // unreachableError means no HTTP reply came back (refused, timed out, DNS...).
 type unreachableError struct{ err error }

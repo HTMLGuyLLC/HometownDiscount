@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -467,6 +468,20 @@ func TestParseURL(t *testing.T) {
 }
 
 func TestIsRemote(t *testing.T) {
+	defer func(f func(string) ([]net.IP, error)) { lookupIP = f }(lookupIP)
+	lookupIP = func(h string) ([]net.IP, error) {
+		switch h {
+		case "my-mac":
+			return []net.IP{net.ParseIP("10.0.0.7")}, nil
+		case "studio.local":
+			return []net.IP{net.ParseIP("192.168.1.5"), net.ParseIP("fe80::1")}, nil
+		case "134744072": // the system resolver reads this as 8.8.8.8
+			return []net.IP{net.ParseIP("8.8.8.8")}, nil
+		case "evil.local":
+			return []net.IP{net.ParseIP("192.168.1.5"), net.ParseIP("8.8.4.4")}, nil
+		}
+		return nil, fmt.Errorf("no such host")
+	}
 	tests := []struct {
 		url    string
 		remote bool
@@ -485,6 +500,9 @@ func TestIsRemote(t *testing.T) {
 		{"http://studio.local.:8000", false},
 		{"http://llm.localhost", false},
 		{"http://my-mac:8000", false},
+		{"http://134744072:8000", true},  // a bare name that resolves to the internet
+		{"http://evil.local:8000", true}, // one public address is enough
+		{"http://nowhere:8000", true},    // a name that doesn't resolve
 		{"172.32.0.1:8000", true},
 		{"http://8.8.8.8", true},
 		{"http://100.64.0.1:8000", true}, // Tailscale-style CGNAT is not RFC 1918

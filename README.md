@@ -35,7 +35,7 @@ curl -fsSL "https://github.com/HTMLGuyLLC/HometownDiscount/releases/latest/downl
 sudo mv htd /usr/local/bin/
 ```
 
-Or pick a file on the [releases page](https://github.com/HTMLGuyLLC/HometownDiscount/releases); `SHA256SUMS` there lets you check the download. If macOS blocks a file you downloaded in a browser, run `xattr -d com.apple.quarantine htd` once.
+Or pick a file on the [releases page](https://github.com/HTMLGuyLLC/HometownDiscount/releases). To check that a download was built from this repo by its release workflow, run `gh attestation verify <file>.tar.gz --repo HTMLGuyLLC/HometownDiscount` (or compare it with `SHA256SUMS`). If macOS blocks a file you downloaded in a browser, run `xattr -d com.apple.quarantine htd` once.
 
 Or build from source (Go 1.25 or newer):
 

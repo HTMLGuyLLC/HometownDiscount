@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // Server flavors.
@@ -154,18 +155,49 @@ func parseURL(raw string) (*url.URL, error) {
 }
 
 // isLocalHost reports whether a host name or IP is on this machine's network.
+// A bare name ("my-mac") or a .local name counts only when every address it
+// resolves to is local: either can still point at the internet. Any other
+// name counts as remote, wherever it points.
 func isLocalHost(host string) bool {
 	h := strings.ToLower(strings.TrimSuffix(host, "."))
 	if i := strings.IndexByte(h, '%'); i >= 0 { // IPv6 zone: fe80::1%en0
 		h = h[:i]
 	}
-	if h == "localhost" || strings.HasSuffix(h, ".localhost") || strings.HasSuffix(h, ".local") {
+	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
 		return true
 	}
 	if ip := net.ParseIP(h); ip != nil {
-		return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()
+		return localIP(ip)
 	}
-	return !strings.Contains(h, ".") // "my-mac": a bare name can only be on the LAN
+	if h == "" || (strings.Contains(h, ".") && !strings.HasSuffix(h, ".local")) {
+		return false
+	}
+	ips, err := lookupIP(h)
+	if err != nil || len(ips) == 0 {
+		return false
+	}
+	for _, ip := range ips {
+		if !localIP(ip) {
+			return false
+		}
+	}
+	return true
+}
+
+func localIP(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()
+}
+
+// lookupIP resolves a host name with a short timeout. Tests swap it.
+var lookupIP = func(host string) ([]net.IP, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	ips := make([]net.IP, len(addrs))
+	for i, a := range addrs {
+		ips[i] = a.IP
+	}
+	return ips, err
 }
 
 // checkModel validates the arguments of a benchmark call and refuses cloud models.
