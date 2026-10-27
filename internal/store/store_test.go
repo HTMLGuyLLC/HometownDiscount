@@ -41,6 +41,11 @@ func TestStore(t *testing.T) {
 	if other.ID() == r.ID() {
 		t.Error("a different quant must be a different rung")
 	}
+	off := r
+	off.Effort = ThinkingOff
+	if off.ID() == r.ID() || off.Label() != r.Label()+" · thinking off" {
+		t.Errorf("thinking off is its own rung: %s, %q", off.ID(), off.Label())
+	}
 	loaded := r
 	loaded.Context, loaded.Server = 4096, "ollama 0.13"
 	if loaded.ID() != r.ID() {

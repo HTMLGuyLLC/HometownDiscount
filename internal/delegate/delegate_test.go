@@ -26,7 +26,7 @@ func TestEvidence(t *testing.T) {
 			store.Run{Rung: "r2", Type: "skill:json", Tier: "small", Graded: true, Pass: true},
 		)
 	}
-	g := Evidence(runs, "r1", config.Speed{MaxSlower: 20}, speed.Claude{})
+	g := Evidence(runs, []string{"r1"}, config.Speed{MaxSlower: 20}, speed.Claude{})
 	if len(g["lookup"]) != 2 || g["list"] != nil || g["json"] != nil {
 		t.Errorf("gate = %v", g)
 	}
@@ -49,18 +49,18 @@ func TestEvidenceWeighsSpeed(t *testing.T) {
 		)
 	}
 	claude := speed.Claude{BySize: map[string]speed.Sample{"small": {Seconds: 3, N: 50}, "medium": {Seconds: 4, N: 50}}}
-	g := Evidence(runs, "r1", config.Speed{MaxSlower: 20}, claude)
+	g := Evidence(runs, []string{"r1"}, config.Speed{MaxSlower: 20}, claude)
 	if !g.Allows("lookup", "small") || g.Allows("lookup", "medium") {
 		t.Fatalf("gate = %v", g)
 	}
-	if why := g["lookup"]["medium"]; !strings.Contains(why, "10.0× Claude's time") || !strings.Contains(why, "limit +20%") {
+	if why := g["lookup"]["medium"].Why; !strings.Contains(why, "10.0× Claude's time") || !strings.Contains(why, "limit +20%") {
 		t.Errorf("why = %q", why)
 	}
 	if g.Summary() != "lookup (files up to 200 lines)" {
 		t.Errorf("summary = %q", g.Summary())
 	}
 
-	g = Evidence(runs, "r1", config.Speed{MaxSlower: 20, ByTask: map[string]any{"lookup:medium": "always", "lookup:small": "never"}}, claude)
+	g = Evidence(runs, []string{"r1"}, config.Speed{MaxSlower: 20, ByTask: map[string]any{"lookup:medium": "always", "lookup:small": "never"}}, claude)
 	if g.Allows("lookup", "small") || !g.Allows("lookup", "medium") {
 		t.Errorf("overrides ignored: %v", g)
 	}
@@ -68,7 +68,7 @@ func TestEvidenceWeighsSpeed(t *testing.T) {
 		t.Errorf("summary = %q", g.Summary())
 	}
 
-	h, _ := handler(t, Gate{"lookup": {"small": "it's 3.0× Claude's time (your limit +20%)"}})
+	h, _ := handler(t, Gate{"lookup": {"small": {Why: "it's 3.0× Claude's time (your limit +20%)"}}})
 	if out := call(h, `{"task":"where is Parse defined?","files":["a.go"],"skill":"lookup"}`); !strings.Contains(out, "proven for Qwen, but Claude does it: it's 3.0×") {
 		t.Errorf("refusal = %q", out)
 	}
@@ -95,7 +95,7 @@ func call(h *Handler, a string) string {
 }
 
 func TestCall(t *testing.T) {
-	h, log := handler(t, Gate{"lookup": {"small": ""}})
+	h, log := handler(t, Gate{"lookup": {"small": {}}})
 	if out := call(h, `{"task":"where is Parse defined?","files":["a.go"],"skill":"lookup"}`); !strings.Contains(out, "Line 3.") || strings.Contains(out, "think") {
 		t.Errorf("answered = %q", out)
 	}
@@ -147,7 +147,7 @@ func TestDescriptionFollowsEvidence(t *testing.T) {
 	if d := h.Tools()[0].Description; !strings.Contains(d, "Nothing is proven yet") {
 		t.Errorf("description = %q", d)
 	}
-	h.Gate = Gate{"json": {"small": "", "medium": "", "large": ""}}
+	h.Gate = Gate{"json": {"small": {}, "medium": {}, "large": {}}}
 	if d := h.Tools()[0].Description; !strings.Contains(d, "json (up to 4,000 lines)") {
 		t.Errorf("description = %q", d)
 	}
@@ -169,11 +169,55 @@ func TestBadShape(t *testing.T) {
 // on every request.
 func TestSummaryGroupsSkills(t *testing.T) {
 	g := Gate{
-		"json":   {"small": ""},
-		"lookup": {"small": "", "medium": ""},
-		"list":   {"small": ""},
+		"json":   {"small": {}},
+		"lookup": {"small": {}, "medium": {}},
+		"list":   {"small": {}},
 	}
 	if got, want := g.Summary(), "json, list (files up to 200 lines); lookup (up to 1,000 lines)"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
+	}
+}
+
+// One model can run two ways (thinking on and off): each skill and size goes
+// to the one that's proven and fast enough, the faster when both are, and
+// ask_local asks the model that way.
+func TestEvidencePicksTheFasterWay(t *testing.T) {
+	var runs []store.Run
+	for i := 0; i < 24; i++ {
+		runs = append(runs,
+			store.Run{Rung: "on", Type: "skill:lookup", Tier: "small", Graded: true, Pass: true, Seconds: 3},
+			store.Run{Rung: "off", Type: "skill:lookup", Tier: "small", Graded: true, Pass: true, Seconds: 0.5},
+			store.Run{Rung: "on", Type: "skill:json", Tier: "small", Graded: true, Pass: true, Seconds: 9},
+			store.Run{Rung: "off", Type: "skill:json", Tier: "small", Graded: true, Pass: true, Seconds: 1},
+			store.Run{Rung: "on", Type: "skill:lines", Tier: "small", Graded: true, Pass: true, Seconds: 3.5},
+			store.Run{Rung: "off", Type: "skill:lines", Tier: "small", Graded: true, Pass: i%2 == 0, Seconds: 0.5},
+			store.Run{Rung: "on", Type: "skill:list", Tier: "small", Graded: true, Pass: true, Seconds: 9},
+		)
+	}
+	claude := speed.Claude{BySize: map[string]speed.Sample{"small": {Seconds: 4, N: 50}}}
+	g := Evidence(runs, []string{"on", "off"}, config.Speed{MaxSlower: 20}, claude)
+	for sk, want := range map[string]Route{
+		"lookup": {Rung: "off"},                 // both quick enough: the faster
+		"json":   {Rung: "off"},                 // only thinking off is quick enough
+		"lines":  {Rung: "on"},                  // only thinking on is proven
+		"list":   {Rung: "on", Why: "too slow"}, // proven, but too slow either way
+	} {
+		got := g[sk]["small"]
+		if got.Rung != want.Rung || (got.Why == "") != (want.Why == "") {
+			t.Errorf("%s: route = %+v, want %+v", sk, got, want)
+		}
+	}
+
+	h, _ := handler(t, g)
+	quiet := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"Line 3, quickly."}}]}`))
+	}))
+	defer quiet.Close()
+	h.Clients = map[string]llm.Chatter{"off": llm.New(quiet.URL, "m")}
+	if out := call(h, `{"task":"where is Parse defined?","files":["a.go"],"skill":"lookup"}`); !strings.Contains(out, "quickly") {
+		t.Errorf("lookup should go to the thinking-off client: %q", out)
+	}
+	if out := call(h, `{"task":"which lines say Parse?","files":["a.go"],"skill":"lines"}`); !strings.Contains(out, "Line 3.") {
+		t.Errorf("lines should go to the default client: %q", out)
 	}
 }

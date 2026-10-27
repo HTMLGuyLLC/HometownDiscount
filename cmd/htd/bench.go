@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -46,7 +47,7 @@ func runBench(args []string, stdout, stderr io.Writer) error {
 	url := fs.String("url", defURL, "local model server URL")
 	model := fs.String("model", defModel, "model to test (default: the first one served)")
 	repo := fs.String("repo", wd, "git repo to build skill checks from")
-	max := fs.Int("max", 150, "stop after this many checks")
+	max := fs.Int("max", 150, "stop after this many checks (each way, for a model that thinks)")
 	timeout := fs.Duration("timeout", 5*time.Minute, "time limit per check")
 	allowRemote := fs.Bool("allow-remote", false, "allow a model server that isn't on this machine or local network (your code goes there)")
 	if err := fs.Parse(args); err != nil {
@@ -68,16 +69,145 @@ func runBench(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	done, err := st.Done(rung.ID())
-	if err != nil {
-		return err
-	}
 	runs, err := st.All()
 	if err != nil {
 		return err
 	}
+	b := benchRun{dir: dir, st: st, runs: runs, tasks: tasks, repo: filepath.Base(*repo), srv: srv, ctxSize: ctxOf(srv, mod), max: *max, out: stdout}
+	plain := llm.New(srv.URL, mod)
+	plain.HTTP.Timeout = *timeout
+	off := rung
+	off.Effort = store.ThinkingOff
+	// A model that thinks first is also checked with thinking off: often far
+	// quicker, and as good at some skills. ask_local picks per skill and size.
+	ways := []way{{rung, plain}}
+	thinks, known := cachedThinks(dir, rung.ID(), time.Now())
+	if !known && (b.pending(rung) || b.pending(off)) {
+		if !waitForMemory(ctx, stdout) {
+			if ctx.Err() != nil {
+				return errors.New("skill checks stopped (0 done)")
+			}
+			return fmt.Errorf("skill checks stopped (0 done): %w", errLowMemory)
+		}
+		if thinks, known, err = b.thinks(ctx, plain); err != nil {
+			return err
+		}
+		if known {
+			saveThinks(dir, rung.ID(), thinks, time.Now())
+		}
+	}
+	if thinks {
+		quiet := llm.New(srv.URL, mod)
+		quiet.HTTP.Timeout = *timeout
+		quiet.NoThinking = true
+		ways = []way{{off, quiet}, {rung, plain}}
+		fmt.Fprintln(stdout, "This model thinks before it answers, so it's checked with thinking off first (much quicker), then on.\nask_local uses whichever is proven and faster for each skill and size.")
+		fmt.Fprintln(stdout)
+	}
+	keepAwake()
+	for _, w := range ways {
+		err := b.run(ctx, w)
+		if errors.Is(err, llm.ErrThinking) {
+			fmt.Fprintln(stdout, "This server doesn't let the model answer without thinking, so it's only checked with thinking on.")
+			fmt.Fprintln(stdout)
+			continue
+		}
+		if err != nil {
+			return err
+		}
+	}
+	fmt.Fprintln(stdout, "Run `htd card` to see what this model can be trusted with.")
+	return nil
+}
+
+// benchRun is one `htd bench` run: skill checks from one repo on one model.
+type benchRun struct {
+	dir     string
+	st      *store.Store
+	runs    []store.Run
+	tasks   []skills.Task
+	repo    string // its folder name
+	srv     *servers.Server
+	ctxSize int
+	max     int
+	out     io.Writer
+}
+
+// way is one way of running the model: the setup its results are kept
+// under, and a client that asks the model that way.
+type way struct {
+	rung   store.Rung
+	client *llm.Client
+}
+
+// pending reports whether checks are left for a setup.
+func (b *benchRun) pending(r store.Rung) bool {
+	done, err := b.st.Done(r.ID())
+	if err != nil {
+		return true
+	}
+	for _, t := range b.tasks {
+		if !done[t.ID] {
+			return true
+		}
+	}
+	return false
+}
+
+// thinks asks the model one easy question, with the model to itself, to see
+// whether it thinks first. known is false when the server didn't answer:
+// the checks then run the usual way, and the server errors get their usual
+// handling there.
+func (b *benchRun) thinks(ctx context.Context, c *llm.Client) (thinks, known bool, err error) {
+	release, err := slot.Acquire(ctx, b.dir, 0, waiting(b.out))
+	if err != nil {
+		return false, false, err
+	}
+	defer release()
+	thinks, err = c.Thinks(ctx)
+	return thinks, err == nil, ctx.Err()
+}
+
+// thinksCache is where bench remembers which setups think first, so a run
+// with nothing left doesn't wake the model to ask. It asks again weekly, in
+// case the server's settings changed.
+func thinksCache(dir string) string { return filepath.Join(dir, "cache", "thinking.json") }
+
+type thinksEntry struct {
+	Thinks bool      `json:"thinks"`
+	At     time.Time `json:"at"`
+}
+
+func cachedThinks(dir, rungID string, now time.Time) (thinks, known bool) {
+	var m map[string]thinksEntry
+	b, err := os.ReadFile(thinksCache(dir))
+	if err != nil || json.Unmarshal(b, &m) != nil {
+		return false, false
+	}
+	e, ok := m[rungID]
+	return e.Thinks, ok && now.Sub(e.At) < 7*24*time.Hour
+}
+
+func saveThinks(dir, rungID string, thinks bool, now time.Time) {
+	m := map[string]thinksEntry{}
+	if b, err := os.ReadFile(thinksCache(dir)); err == nil {
+		json.Unmarshal(b, &m)
+	}
+	m[rungID] = thinksEntry{Thinks: thinks, At: now.UTC()}
+	if b, err := json.MarshalIndent(m, "", "  "); err == nil && os.MkdirAll(filepath.Dir(thinksCache(dir)), 0o700) == nil {
+		os.WriteFile(thinksCache(dir), b, 0o600) // only a shortcut: losing it costs one question
+	}
+}
+
+// run does the checks left for one way of running the model, easiest first.
+func (b *benchRun) run(ctx context.Context, w way) error {
+	rung, client, stdout, st, dir, ctxSize := w.rung, w.client, b.out, b.st, b.dir, b.ctxSize
+	done, err := st.Done(rung.ID())
+	if err != nil {
+		return err
+	}
 	prior := map[schedule.Key][]bool{}
-	for _, r := range runs {
+	for _, r := range b.runs {
 		if r.Rung == rung.ID() && r.Graded && strings.HasPrefix(r.Type, skills.TypePrefix) {
 			k := schedule.Key{Type: strings.TrimPrefix(r.Type, skills.TypePrefix), Tier: r.Tier}
 			prior[k] = append(prior[k], r.Pass)
@@ -85,7 +215,7 @@ func runBench(args []string, stdout, stderr io.Writer) error {
 	}
 	byID := map[string]skills.Task{}
 	var jobs []schedule.Job
-	for _, t := range tasks {
+	for _, t := range b.tasks {
 		if done[t.ID] {
 			continue
 		}
@@ -93,21 +223,17 @@ func runBench(args []string, stdout, stderr io.Writer) error {
 		jobs = append(jobs, schedule.Job{ID: t.ID, Type: t.Skill, Tier: t.Size, Calls: t.Lines})
 	}
 	if len(jobs) == 0 {
-		fmt.Fprintln(stdout, "No new skill checks for this setup. Run `htd card` to see the results.")
+		fmt.Fprintf(stdout, "No new skill checks for this setup (%s).\n\n", rung.Label())
 		return nil
 	}
 	sched := schedule.New(skillOrder, jobs, prior, skills.Bar)
 	fmt.Fprintf(stdout, "Skill checks from %s on %s\nEasiest skills and smallest files first; a size stops as soon as it clearly can't reach %.0f%%.\n\n",
-		filepath.Base(*repo), rung.Label(), skills.Bar*100)
-	keepAwake()
+		b.repo, rung.Label(), skills.Bar*100)
 
-	client := llm.New(srv.URL, mod)
-	client.HTTP.Timeout = *timeout
-	up := serverUp(ctx, srv.URL)
+	up := serverUp(ctx, b.srv.URL)
 	var ran, passed, errorsInRow int
 	skipped := map[string]int{}
-	ctxSize := ctxOf(srv, mod)
-	for ran < *max {
+	for ran < b.max {
 		j, ok := sched.Next()
 		if !ok {
 			break
@@ -146,6 +272,8 @@ func runBench(args []string, stdout, stderr io.Writer) error {
 			// A limit of the server's settings, not the model's skill: skip.
 			skipped["too long for the server's context"]++
 			continue
+		case errors.Is(err, llm.ErrThinking):
+			return err // this way of running the model isn't available here
 		case err != nil:
 			// A crash, an overloaded or restarting server: not the model's
 			// fault, so nothing is recorded. A server that stops answering
@@ -200,16 +328,17 @@ func runBench(args []string, stdout, stderr io.Writer) error {
 	if _, more := sched.Next(); !more {
 		fmt.Fprintln(stdout, "Every skill check this repo can make has run on this setup. Run `htd bench` in another repo for more evidence.")
 	}
-	fmt.Fprintln(stdout, "Run `htd card` to see what this model can be trusted with.")
+	fmt.Fprintln(stdout)
 	return nil
 }
 
 // chatOnce runs one chat turn, retrying once after a short pause if the
-// server errors (not on timeouts or context overflow, which are answers).
+// server errors (not on timeouts, context overflow or a model that won't
+// stop thinking, which are answers).
 func chatOnce(ctx context.Context, c llm.Chatter, msgs []llm.Message) (llm.Message, error) {
 	reply, _, err := c.Chat(ctx, msgs, nil)
 	var netErr net.Error
-	if err == nil || ctx.Err() != nil || llm.IsContextOverflow(err) || (errors.As(err, &netErr) && netErr.Timeout()) {
+	if err == nil || ctx.Err() != nil || llm.IsContextOverflow(err) || errors.Is(err, llm.ErrThinking) || (errors.As(err, &netErr) && netErr.Timeout()) {
 		return reply, err
 	}
 	select {

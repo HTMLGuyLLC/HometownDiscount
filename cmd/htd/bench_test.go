@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -99,6 +100,10 @@ func TestBenchWaitsForServerRecovery(t *testing.T) {
 			}
 			w.Write([]byte(`{"object":"list","data":[{"id":"tiny-q4","object":"model"}]}`))
 		case "/v1/chat/completions":
+			if body, _ := io.ReadAll(r.Body); strings.Contains(string(body), "17 + 25") {
+				w.Write([]byte(`{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"42"}}]}`)) // whether it thinks: no
+				return
+			}
 			if chats++; chats <= 2 { // the check and its one retry
 				down = true
 				http.Error(w, "engine is recovering; retry shortly", http.StatusServiceUnavailable)

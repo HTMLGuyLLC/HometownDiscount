@@ -87,7 +87,7 @@ func TestBenchGradesAndStoresSkillChecks(t *testing.T) {
 	if err != nil || !strings.Contains(out, "No new skill checks for this setup") {
 		t.Errorf("a second run has nothing left: %v\n%s", err, out)
 	}
-	if srv.chatCount() != total {
+	if srv.chatCount() != total+1 { // and one question to see whether it thinks
 		t.Errorf("the second run must not call the model again: %d calls for %d checks", srv.chatCount(), total)
 	}
 }
@@ -135,7 +135,7 @@ func TestBenchSkipsChecksThatDoNotFitTheContext(t *testing.T) {
 		t.Fatalf("%v\n%s", err, out)
 	}
 
-	if srv.chatCount() != 0 || len(storedRuns(t, home)) != 0 {
+	if srv.chatCount() > 1 || len(storedRuns(t, home)) != 0 { // at most the question whether it thinks
 		t.Errorf("nothing should run: %d model calls, %d runs", srv.chatCount(), len(storedRuns(t, home)))
 	}
 	if !strings.Contains(out, "too long for the server's context") || !strings.Contains(out, "0 checks, 0 passed.") {
@@ -212,5 +212,71 @@ func TestWithConfigQuantAndRemoteAllowed(t *testing.T) {
 	known.Quant = "8-bit"
 	if got := withConfigQuant(known, cfg).Quant; got != "8-bit" {
 		t.Errorf("a quant the server reported is not overridden, got %q", got)
+	}
+}
+
+// A model that thinks first is checked with thinking off too, first, and its
+// results are kept apart. Asking again finds nothing left and doesn't wake
+// the model.
+func TestBenchChecksAThinkingModelBothWays(t *testing.T) {
+	home, _ := hermetic(t)
+	repo := benchRepo(t)
+	answer, total := answersFor(t, repo, true)
+	srv := newFakeServer(t, modelList("tiny-q4"), func(n int, r chatRequest) fakeReply {
+		rep := answer(n, r)
+		if r.ReasoningEffort != "none" {
+			rep.Reasoning = "let me think"
+		}
+		return rep
+	})
+
+	out, err := bench(t, srv, repo)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	byRung := map[string]int{}
+	for _, r := range storedRuns(t, home) {
+		byRung[r.Rung]++
+	}
+	if len(byRung) != 2 {
+		t.Fatalf("want results for thinking on and off, got %v", byRung)
+	}
+	for rung, n := range byRung {
+		if n != total {
+			t.Errorf("%s: %d of %d checks", rung, n, total)
+		}
+	}
+	off := strings.Index(out, "on tiny-q4 · Q4 · builtin · thinking off")
+	on := strings.Index(out, "on tiny-q4 · Q4 · builtin\n")
+	if !strings.Contains(out, "thinks before it answers") || off < 0 || on < off {
+		t.Errorf("want thinking off first, then on:\n%s", out)
+	}
+
+	calls := srv.chatCount()
+	if out, err = bench(t, srv, repo); err != nil || srv.chatCount() != calls || !strings.Contains(out, "No new skill checks") {
+		t.Errorf("nothing left: %d new calls, %v\n%s", srv.chatCount()-calls, err, out)
+	}
+}
+
+// A server that ignores every way of turning thinking off is checked the
+// usual way only.
+func TestBenchWhenThinkingCannotBeTurnedOff(t *testing.T) {
+	home, _ := hermetic(t)
+	repo := benchRepo(t)
+	answer, total := answersFor(t, repo, true)
+	srv := newFakeServer(t, modelList("tiny-q4"), func(n int, r chatRequest) fakeReply {
+		rep := answer(n, r)
+		rep.Reasoning = "let me think"
+		return rep
+	})
+	out, err := bench(t, srv, repo)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if runs := storedRuns(t, home); len(runs) != total || strings.Contains(runs[0].Rung, "none") {
+		t.Errorf("want only thinking-on results, got %d runs", len(runs))
+	}
+	if !strings.Contains(out, "doesn't let the model answer without thinking") {
+		t.Errorf("output:\n%s", out)
 	}
 }

@@ -62,7 +62,8 @@ type chatRequest struct {
 			Name string `json:"name"`
 		} `json:"function"`
 	} `json:"tools"`
-	MaxTokens int `json:"max_tokens"`
+	MaxTokens       int    `json:"max_tokens"`
+	ReasoningEffort string `json:"reasoning_effort"`
 }
 
 // task is the first user message: a replay's original task, or an ask_local
@@ -98,6 +99,9 @@ type fakeReply struct {
 	Finish  string // finish_reason; "" is "stop"
 	Calls   []fakeCall
 	Tokens  int // usage.completion_tokens
+	// Reasoning is thinking returned apart from the reply, as LM Studio and
+	// vLLM do.
+	Reasoning string
 	// FailProbes makes the next n /v1/models requests fail, as if this reply
 	// were the server's last before going down.
 	FailProbes int
@@ -168,6 +172,9 @@ func newFakeServer(t *testing.T, models []map[string]any, chat func(n int, r cha
 				return
 			}
 			msg := map[string]any{"role": "assistant", "content": rep.Content}
+			if rep.Reasoning != "" {
+				msg["reasoning_content"] = rep.Reasoning
+			}
 			var calls []map[string]any
 			for i, c := range rep.Calls {
 				calls = append(calls, map[string]any{

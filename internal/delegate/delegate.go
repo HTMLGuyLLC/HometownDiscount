@@ -32,18 +32,55 @@ const (
 	MaxBytes = 512 << 10
 )
 
-// Gate is what the local model may take, per skill and input size: "" when
-// it takes it, or why Claude keeps a size the model has proven (too slow).
-// Sizes that aren't proven are absent.
-type Gate map[string]map[string]string
+// Gate is what the local model may take, per skill and input size. Sizes
+// that aren't proven are absent.
+type Gate map[string]map[string]Route
 
-// Evidence reads, for one setup, the skills and sizes the local model has
-// proven and is fast enough for. Proof at a size covers the smaller sizes;
-// speed is judged per size, and a size with too few timings goes by proof.
-func Evidence(runs []store.Run, rungID string, s config.Speed, c speed.Claude) Gate {
+// Route is the decision for one skill and size.
+type Route struct {
+	Why  string // "" when the local model takes it; otherwise why Claude keeps it (too slow)
+	Rung string // the setup that earned it, e.g. the model with thinking off
+	secs float64
+}
+
+// Evidence reads the skills and sizes the local model has proven and is fast
+// enough for. Proof at a size covers the smaller sizes; speed is judged per
+// size, and a size with too few timings goes by proof. rungIDs are the ways
+// one model can run (thinking on and off): each skill and size goes to the
+// fastest one that's proven and quick enough.
+func Evidence(runs []store.Run, rungIDs []string, s config.Speed, c speed.Claude) Gate {
+	rows := card.WithSpeed(card.Build(runs, nil), s, c)
+	g := Gate{}
+	for _, id := range rungIDs {
+		for sk, sizes := range evidence(rows, id, s) {
+			if g[sk] == nil {
+				g[sk] = map[string]Route{}
+			}
+			for size, r := range sizes {
+				if cur, ok := g[sk][size]; !ok || r.beats(cur) {
+					g[sk][size] = r
+				}
+			}
+		}
+	}
+	return g
+}
+
+// beats reports whether r is the better way to run a skill and size: one the
+// local model takes beats one it doesn't, then the faster one. A size proven
+// only through a bigger one has no time of its own and counts as slower.
+func (r Route) beats(o Route) bool {
+	if (r.Why == "") != (o.Why == "") {
+		return r.Why == ""
+	}
+	return r.secs > 0 && (o.secs == 0 || r.secs < o.secs)
+}
+
+// evidence is Evidence for one setup.
+func evidence(all []card.Row, rungID string, s config.Speed) Gate {
 	proven := map[string]string{} // skill -> largest proven size
 	rows := map[string]card.Row{} // "skill/size" -> row
-	for _, row := range card.WithSpeed(card.Build(runs, nil), s, c) {
+	for _, row := range all {
 		sk, ok := strings.CutPrefix(row.Type, skills.TypePrefix)
 		if row.Rung != rungID || !ok {
 			continue
@@ -55,16 +92,17 @@ func Evidence(runs []store.Run, rungID string, s config.Speed, c speed.Claude) G
 	}
 	g := Gate{}
 	for sk, top := range proven {
-		g[sk] = map[string]string{}
+		g[sk] = map[string]Route{}
 		for _, size := range skills.SizeOrder[:sizeRank(top)] {
 			v := speed.Decide(speed.RuleFor(s, sk, size), 0, false)
+			r := Route{Rung: rungID}
 			if row, ok := rows[sk+"/"+size]; ok {
-				v = row.Speed
+				v, r.secs = row.Speed, row.MedianSecs
 			}
-			g[sk][size] = ""
 			if v.Kept {
-				g[sk][size] = v.Why()
+				r.Why = v.Why()
 			}
+			g[sk][size] = r
 		}
 	}
 	return g
@@ -81,8 +119,8 @@ func sizeRank(s string) int {
 
 // Allows reports whether the local model takes a skill at an input size.
 func (g Gate) Allows(skill, size string) bool {
-	why, ok := g[skill][size]
-	return ok && why == ""
+	r, ok := g[skill][size]
+	return ok && r.Why == ""
 }
 
 // Empty reports whether the local model takes nothing.
@@ -143,8 +181,11 @@ type Delegation struct {
 
 // Handler serves ask_local.
 type Handler struct {
-	Root    string // the project folder; files outside it are refused
-	Client  llm.Chatter
+	Root   string // the project folder; files outside it are refused
+	Client llm.Chatter
+	// Clients run the model another way, by the rung that earned a route
+	// (e.g. thinking off); a route from any other rung uses Client.
+	Clients map[string]llm.Chatter
 	Label   string // the setup, in plain words
 	Gate    Gate
 	Setup   error // non-nil when the local server couldn't be reached at start
@@ -230,10 +271,11 @@ func (h *Handler) Call(ctx context.Context, name string, raw json.RawMessage) mc
 	if h.Context > 0 && len(blocks)/3+1000 > h.Context {
 		return refuse(fmt.Sprintf("the files don't fit the server's context (%d tokens); raise it in your model server's settings.", h.Context))
 	}
-	if why, ok := h.Gate[a.Skill][d.Size]; ok && why != "" {
-		return refuse(fmt.Sprintf("%q at %d lines is proven for %s, but Claude does it: %s.", a.Skill, lines, h.Label, why))
+	route, ok := h.Gate[a.Skill][d.Size]
+	if ok && route.Why != "" {
+		return refuse(fmt.Sprintf("%q at %d lines is proven for %s, but Claude does it: %s.", a.Skill, lines, h.Label, route.Why))
 	}
-	if !h.Gate.Allows(a.Skill, d.Size) {
+	if !ok {
 		takes := h.Gate.Summary()
 		if takes == "" {
 			takes = "nothing yet"
@@ -241,7 +283,11 @@ func (h *Handler) Call(ctx context.Context, name string, raw json.RawMessage) mc
 		return refuse(fmt.Sprintf("%q at %d lines isn't proven for %s (it takes: %s).", a.Skill, lines, h.Label, takes))
 	}
 
-	reply, _, err := h.Client.Chat(ctx, []llm.Message{
+	client := h.Client
+	if c, ok := h.Clients[route.Rung]; ok {
+		client = c
+	}
+	reply, _, err := client.Chat(ctx, []llm.Message{
 		{Role: "system", Content: skills.SystemPrompt},
 		{Role: "user", Content: blocks + "\nTask: " + a.Task},
 	}, nil)

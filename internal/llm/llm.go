@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/localhttp"
@@ -27,6 +28,9 @@ type Message struct {
 	// FinishReason is the server's reason the reply ended ("stop", "length"
 	// when it hit the token limit...). It's never sent back to the server.
 	FinishReason string `json:"-"`
+	// Reasoning is thinking the server returned apart from the reply text.
+	// It's never sent back either.
+	Reasoning string `json:"-"`
 }
 
 // ToolCall is a model's request to run a tool.
@@ -50,6 +54,7 @@ type Tool struct {
 type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
+	ReasoningTokens  int `json:"-"` // the part of CompletionTokens spent thinking, when the server says
 }
 
 // Client talks to one server and model.
@@ -58,6 +63,22 @@ type Client struct {
 	Model     string
 	MaxTokens int
 	HTTP      *http.Client
+	// NoThinking asks the server to answer without thinking first. Servers
+	// spell that differently; the first spelling that works is remembered.
+	// A server that ignores every one fails with ErrThinking.
+	NoThinking bool
+	off        atomic.Int32 // the spelling in offStyles to try first
+}
+
+// ErrThinking means the server kept thinking although asked not to.
+var ErrThinking = errors.New("the server doesn't let this model answer without thinking")
+
+// offStyles are the ways servers are asked not to think: reasoning_effort
+// (LM Studio, Ollama and other OpenAI-style servers), then the chat-template
+// switch (vLLM, SGLang, llama.cpp and MLX servers).
+var offStyles = []func(*chatRequest){
+	func(r *chatRequest) { r.ReasoningEffort = "none" },
+	func(r *chatRequest) { r.TemplateArgs = map[string]any{"enable_thinking": false} },
 }
 
 // New returns a client with a 10-minute request timeout (local models can be slow).
@@ -80,19 +101,30 @@ type toolSpec struct {
 }
 
 type chatRequest struct {
-	Model     string     `json:"model"`
-	Messages  []Message  `json:"messages"`
-	Tools     []toolSpec `json:"tools,omitempty"`
-	MaxTokens int        `json:"max_tokens,omitempty"`
-	Stream    bool       `json:"stream"`
+	Model           string         `json:"model"`
+	Messages        []Message      `json:"messages"`
+	Tools           []toolSpec     `json:"tools,omitempty"`
+	MaxTokens       int            `json:"max_tokens,omitempty"`
+	Stream          bool           `json:"stream"`
+	ReasoningEffort string         `json:"reasoning_effort,omitempty"`
+	TemplateArgs    map[string]any `json:"chat_template_kwargs,omitempty"`
 }
 
 type chatResponse struct {
 	Choices []struct {
-		Message      Message `json:"message"`
-		FinishReason string  `json:"finish_reason"`
+		Message struct {
+			Message
+			ReasoningContent string `json:"reasoning_content"` // vLLM, llama.cpp, LM Studio
+			Reasoning        string `json:"reasoning"`         // Ollama
+		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
-	Usage Usage `json:"usage"`
+	Usage struct {
+		Usage
+		Details struct {
+			ReasoningTokens int `json:"reasoning_tokens"`
+		} `json:"completion_tokens_details"`
+	} `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error"`
@@ -107,6 +139,59 @@ func (c *Client) Chat(ctx context.Context, msgs []Message, tools []Tool) (Messag
 		s.Function.Name, s.Function.Description, s.Function.Parameters = t.Name, t.Description, t.Parameters
 		req.Tools = append(req.Tools, s)
 	}
+	if !c.NoThinking {
+		return c.send(ctx, req)
+	}
+	ignored := false // a spelling was accepted, but the model thought anyway
+	var refused error
+	for i := int(c.off.Load()); i < len(offStyles); i++ {
+		r := req
+		offStyles[i](&r)
+		msg, u, err := c.send(ctx, r)
+		var se *ServerError
+		switch {
+		case err == nil && !Thought(msg, u):
+			c.off.Store(int32(i))
+			return msg, u, nil
+		case err == nil:
+			ignored = true
+		case errors.As(err, &se) && se.Status >= 400 && se.Status < 500 && !IsContextOverflow(err):
+			refused = err // this server doesn't know the spelling
+		default:
+			return msg, u, err // a real failure
+		}
+	}
+	if !ignored && refused != nil {
+		return Message{}, Usage{}, refused // maybe the request, not the spelling: don't remember
+	}
+	c.off.Store(int32(len(offStyles)))
+	return Message{}, Usage{}, ErrThinking
+}
+
+// thinksPrompt is a question with nothing to think about.
+const thinksPrompt = "Reply with only the number: what is 17 + 25?"
+
+// Thinks reports whether the model thinks before it answers when the server
+// is left to its defaults, from one short question.
+func (c *Client) Thinks(ctx context.Context) (bool, error) {
+	msg, u, err := c.send(ctx, chatRequest{Model: c.Model, Messages: []Message{{Role: "user", Content: thinksPrompt}}, MaxTokens: 1024})
+	if err != nil {
+		return false, err
+	}
+	return Thought(msg, u) || (msg.FinishReason == "length" && StripThinking(msg.Content) == ""), nil
+}
+
+// thoughtText finds thinking in reply text: a <think> block with something in
+// it, or text before a closing tag whose opening one was cut off. An empty
+// block, which some servers echo when thinking is off, doesn't count.
+var thoughtText = regexp.MustCompile(`(?s)<think>\s*[^\s<]|[^\s>]\s*</think>`)
+
+// Thought reports whether a reply shows the model thought before answering.
+func Thought(m Message, u Usage) bool {
+	return u.ReasoningTokens > 0 || strings.TrimSpace(m.Reasoning) != "" || thoughtText.MatchString(m.Content)
+}
+
+func (c *Client) send(ctx context.Context, req chatRequest) (Message, Usage, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return Message{}, Usage{}, err
@@ -135,10 +220,14 @@ func (c *Client) Chat(ctx context.Context, msgs []Message, tools []Tool) (Messag
 	if resp.StatusCode != http.StatusOK || len(out.Choices) == 0 {
 		return Message{}, Usage{}, &ServerError{Status: resp.StatusCode, Message: "no reply"}
 	}
-	msg := out.Choices[0].Message
+	ch := out.Choices[0]
+	msg := ch.Message.Message
 	msg.Role = "assistant"
-	msg.FinishReason = out.Choices[0].FinishReason
-	return msg, out.Usage, nil
+	msg.FinishReason = ch.FinishReason
+	msg.Reasoning = ch.Message.ReasoningContent + ch.Message.Reasoning
+	u := out.Usage.Usage
+	u.ReasoningTokens = out.Usage.Details.ReasoningTokens
+	return msg, u, nil
 }
 
 // ServerError is an error the model server reported.

@@ -51,8 +51,12 @@ type Rung struct {
 	Server  string `json:"server"` // flavor and version, e.g. "ollama 0.12.3"
 	Context int    `json:"context"`
 	Loop    string `json:"loop"`
-	Effort  string `json:"effort,omitempty"`
+	Effort  string `json:"effort,omitempty"` // "" = the server's default; ThinkingOff
 }
+
+// ThinkingOff is the Effort of a thinking model asked to answer without
+// thinking first. Skill checks run it too, since it's often far faster.
+const ThinkingOff = "none"
 
 // ID is the stable key evidence is kept under: model, quant, loop and
 // effort. Server version and context are shown but not part of the key,
@@ -88,7 +92,15 @@ func (r Rung) Label() string {
 	if r.Context > 0 {
 		s += " · " + commas(r.Context) + " ctx"
 	}
-	return s + " · " + r.Loop
+	s += " · " + r.Loop
+	switch r.Effort {
+	case "":
+	case ThinkingOff:
+		s += " · thinking off"
+	default:
+		s += " · effort " + r.Effort
+	}
+	return s
 }
 
 // Store is the results file.

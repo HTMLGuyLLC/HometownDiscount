@@ -68,7 +68,7 @@ func TestBenchWaitsForTheModel(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("%v\n%s", err, out.String())
 	}
-	if srv.chatCount() != 1 || !strings.Contains(out.String(), "1 checks, 1 passed.") {
+	if srv.chatCount() != 2 || !strings.Contains(out.String(), "1 checks, 1 passed.") { // whether it thinks, then the check
 		t.Errorf("the check should run once the model is free:\n%s", out.String())
 	}
 }
