@@ -64,7 +64,8 @@ func runSetup(args []string, stdin io.Reader, stdout io.Writer) error {
 	m := spendmap.Build(h, prices, since, 30)
 	fmt.Fprintf(stdout, "1/3 Your spend map ..... %d subagent jobs in 30 days (%.0f%% of your Claude usage) → `htd map`\n", m.Jobs, m.Share()*100)
 
-	// 2/3: the hometown model.
+	// 2/3: the hometown models. The first answer is the main one; more can
+	// be added, e.g. a small fast model next to a big one.
 	def := "http://127.0.0.1:8000"
 	if len(cfg.Local) > 0 {
 		def = cfg.Local[0].URL
@@ -72,20 +73,26 @@ func runSetup(args []string, stdin io.Reader, stdout io.Writer) error {
 	fmt.Fprintln(stdout, "2/3 Hometown model ..... any local server with an OpenAI-compatible API (MTPLX, Splish, Ollama, LM Studio, llama.cpp, vLLM)")
 	url := ask("    Server URL? (or \"none\")", def)
 	if url == "none" && len(cfg.Local) > 0 {
-		cfg.Local = nil // "none" means no local model, even one set up before
-		fmt.Fprintln(stdout, "    Removed the local model: htd won't use one until you run `htd setup` again.")
+		cfg.Local = nil // "none" means no local model, even ones set up before
+		fmt.Fprintln(stdout, "    Removed the local models: htd won't use one until you run `htd setup` again.")
 	}
 	if url != "none" {
-		allowRemote := false
-		if servers.IsRemote(url) {
-			fmt.Fprintln(stdout, "    That host isn't on this machine or your local network: skill checks, replays and ask_local would send your code there.")
-			allowRemote = strings.HasPrefix(strings.ToLower(ask("    Allow it anyway? [y/N]", "n")), "y")
-			if !allowRemote {
-				url = "none"
+		if l, ok := setupModel(ctx, url, ask, stdout); ok {
+			cfg.Local = placeModel(cfg.Local, 0, l)
+		}
+		for len(cfg.Local) > 0 {
+			for _, l := range cfg.Local[1:] {
+				fmt.Fprintf(stdout, "    Also set up: %s at %s\n", l.Model, l.URL)
+			}
+			if !strings.HasPrefix(strings.ToLower(ask("    Add another model? (a small, fast one next to a big one, say) [y/N]", "n")), "y") {
+				break
+			}
+			if l, ok := setupModel(ctx, ask("    Server URL?", cfg.Local[len(cfg.Local)-1].URL), ask, stdout); ok {
+				cfg.Local = placeModel(cfg.Local, len(cfg.Local), l)
 			}
 		}
-		if url != "none" {
-			configureModel(ctx, url, allowRemote, ask, stdout, &cfg)
+		if len(cfg.Local) > 1 {
+			fmt.Fprintln(stdout, "    Each task goes to the fastest model that's proven for it ([pick] in config.toml changes that).")
 		}
 	}
 
@@ -127,21 +134,48 @@ func runSetup(args []string, stdin io.Reader, stdout io.Writer) error {
 	return nil
 }
 
-// configureModel probes a server, lets the user pick a model, tests it and
-// saves it. The tool-call test only matters for replays, so a model that
-// fails it is still saved for skill checks and ask_local.
-func configureModel(ctx context.Context, url string, allowRemote bool, ask func(string, string) string, stdout io.Writer, cfg *config.Config) {
+// placeModel puts l at index i of the list (replacing what's there, or
+// adding it at the end), dropping any other entry for the same model on the
+// same server.
+func placeModel(list []config.Local, i int, l config.Local) []config.Local {
+	var out []config.Local
+	for j, x := range list {
+		switch {
+		case j == i:
+			out = append(out, l)
+		case x.URL != l.URL || x.Model != l.Model:
+			out = append(out, x)
+		}
+	}
+	if i >= len(list) {
+		out = append(out, l)
+	}
+	return out
+}
+
+// setupModel checks a server URL, lets the user pick a model, tests it and
+// returns it. A server off this machine and network needs the user's OK. The
+// tool-call test only matters for replays, so a model that fails it is still
+// set up for skill checks and ask_local.
+func setupModel(ctx context.Context, url string, ask func(string, string) string, stdout io.Writer) (config.Local, bool) {
+	allowRemote := false
+	if servers.IsRemote(url) {
+		fmt.Fprintln(stdout, "    That host isn't on this machine or your local network: skill checks, replays and ask_local would send your code there.")
+		if allowRemote = strings.HasPrefix(strings.ToLower(ask("    Allow it anyway? [y/N]", "n")), "y"); !allowRemote {
+			return config.Local{}, false
+		}
+	}
 	s, err := servers.Probe(ctx, url)
 	switch {
 	case err != nil:
 		fmt.Fprintf(stdout, "    Couldn't reach a model server there (%v). Start your server, then run `htd setup` again.\n", err)
-		return
+		return config.Local{}, false
 	case s.Flavor == servers.FlavorAnthropic:
 		fmt.Fprintln(stdout, "    That server only speaks the Anthropic API; htd needs an OpenAI-compatible /v1/chat/completions endpoint.")
-		return
+		return config.Local{}, false
 	case len(s.Models) == 0:
 		fmt.Fprintln(stdout, "    The server lists no chat models. Load one, then run `htd setup` again.")
-		return
+		return config.Local{}, false
 	}
 	mod := s.Models[0]
 	if len(s.Models) > 1 {
@@ -155,7 +189,7 @@ func configureModel(ctx context.Context, url string, allowRemote bool, ask func(
 			}
 			if tries == 3 {
 				fmt.Fprintln(stdout, "    No model picked; run `htd setup` again to choose one.")
-				return
+				return config.Local{}, false
 			}
 			fmt.Fprintf(stdout, "    Pick a number from 1 to %d.\n", len(s.Models))
 		}
@@ -163,7 +197,7 @@ func configureModel(ctx context.Context, url string, allowRemote bool, ask func(
 	fmt.Fprintf(stdout, "    found %s · %s · %s\n", mod.ID, quantLabel(mod.Quant), contextLabel(mod))
 	if mod.Cloud {
 		fmt.Fprintln(stdout, "    That model runs in the cloud, not on your machine, so it can't be a hometown model.")
-		return
+		return config.Local{}, false
 	}
 	quant := "auto"
 	if !mod.Quant.Known() {
@@ -183,5 +217,5 @@ func configureModel(ctx context.Context, url string, allowRemote bool, ask func(
 	default:
 		fmt.Fprintf(stdout, "    %.0f tok/s ✓ · %d of 20 tool calls valid ✓\n", tps, valid)
 	}
-	cfg.Local = []config.Local{{URL: s.URL, Model: mod.ID, Quant: quant, Loop: "builtin", AllowRemote: allowRemote}}
+	return config.Local{URL: s.URL, Model: mod.ID, Quant: quant, Loop: "builtin", AllowRemote: allowRemote}, true
 }

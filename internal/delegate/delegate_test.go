@@ -26,7 +26,7 @@ func TestEvidence(t *testing.T) {
 			store.Run{Rung: "r2", Type: "skill:json", Tier: "small", Graded: true, Pass: true},
 		)
 	}
-	g := Evidence(runs, []string{"r1"}, config.Speed{MaxSlower: 20}, speed.Claude{})
+	g := Evidence(runs, []string{"r1"}, config.Speed{MaxSlower: 20}, config.Pick{}, speed.Claude{})
 	if len(g["lookup"]) != 2 || g["list"] != nil || g["json"] != nil {
 		t.Errorf("gate = %v", g)
 	}
@@ -49,7 +49,7 @@ func TestEvidenceWeighsSpeed(t *testing.T) {
 		)
 	}
 	claude := speed.Claude{BySize: map[string]speed.Sample{"small": {Seconds: 3, N: 50}, "medium": {Seconds: 4, N: 50}}}
-	g := Evidence(runs, []string{"r1"}, config.Speed{MaxSlower: 20}, claude)
+	g := Evidence(runs, []string{"r1"}, config.Speed{MaxSlower: 20}, config.Pick{}, claude)
 	if !g.Allows("lookup", "small") || g.Allows("lookup", "medium") {
 		t.Fatalf("gate = %v", g)
 	}
@@ -60,7 +60,7 @@ func TestEvidenceWeighsSpeed(t *testing.T) {
 		t.Errorf("summary = %q", g.Summary())
 	}
 
-	g = Evidence(runs, []string{"r1"}, config.Speed{MaxSlower: 20, ByTask: map[string]any{"lookup:medium": "always", "lookup:small": "never"}}, claude)
+	g = Evidence(runs, []string{"r1"}, config.Speed{MaxSlower: 20, ByTask: map[string]any{"lookup:medium": "always", "lookup:small": "never"}}, config.Pick{}, claude)
 	if g.Allows("lookup", "small") || !g.Allows("lookup", "medium") {
 		t.Errorf("overrides ignored: %v", g)
 	}
@@ -87,7 +87,7 @@ func handler(t *testing.T, gate Gate) (*Handler, *[]Delegation) {
 	os.WriteFile(filepath.Join(root, "a.go"), []byte("package a\n\nfunc Parse() {}\n"), 0o644)
 	os.WriteFile(filepath.Join(filepath.Dir(root), "secret.txt"), []byte("token"), 0o644)
 	var log []Delegation
-	return &Handler{Root: root, Client: llm.New(srv.URL, "m"), Label: "Qwen", Gate: gate, Log: func(d Delegation) { log = append(log, d) }}, &log
+	return &Handler{Root: root, Models: map[string]Model{"": {Client: llm.New(srv.URL, "m")}}, Label: "Qwen", Gate: gate, Log: func(d Delegation) { log = append(log, d) }}, &log
 }
 
 func call(h *Handler, a string) string {
@@ -195,7 +195,7 @@ func TestEvidencePicksTheFasterWay(t *testing.T) {
 		)
 	}
 	claude := speed.Claude{BySize: map[string]speed.Sample{"small": {Seconds: 4, N: 50}}}
-	g := Evidence(runs, []string{"on", "off"}, config.Speed{MaxSlower: 20}, claude)
+	g := Evidence(runs, []string{"on", "off"}, config.Speed{MaxSlower: 20}, config.Pick{}, claude)
 	for sk, want := range map[string]Route{
 		"lookup": {Rung: "off"},                 // both quick enough: the faster
 		"json":   {Rung: "off"},                 // only thinking off is quick enough
@@ -213,11 +213,74 @@ func TestEvidencePicksTheFasterWay(t *testing.T) {
 		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"Line 3, quickly."}}]}`))
 	}))
 	defer quiet.Close()
-	h.Clients = map[string]llm.Chatter{"off": llm.New(quiet.URL, "m")}
+	h.Models["on"], h.Models["off"] = h.Models[""], Model{Client: llm.New(quiet.URL, "m")}
 	if out := call(h, `{"task":"where is Parse defined?","files":["a.go"],"skill":"lookup"}`); !strings.Contains(out, "quickly") {
 		t.Errorf("lookup should go to the thinking-off client: %q", out)
 	}
 	if out := call(h, `{"task":"which lines say Parse?","files":["a.go"],"skill":"lines"}`); !strings.Contains(out, "Line 3.") {
 		t.Errorf("lines should go to the default client: %q", out)
+	}
+}
+
+// With several local models, each earns its own proof, and each skill and
+// size goes to one that's proven and fast enough: a pinned model, then the
+// fastest (or the first listed), then the first listed.
+func TestEvidenceAcrossModels(t *testing.T) {
+	small := store.Rung{Model: "small", Quant: "4bit", Loop: "builtin"}
+	smallOff := small
+	smallOff.Effort = store.ThinkingOff
+	big := store.Rung{Model: "big", Quant: "4bit", Loop: "builtin"}
+	ids := []string{small.ID(), smallOff.ID(), big.ID()}
+	var runs []store.Run
+	add := func(r store.Rung, skill string, secs float64) {
+		for range 24 {
+			runs = append(runs, store.Run{Rung: r.ID(), Type: "skill:" + skill, Tier: "small", Graded: true, Pass: true, Seconds: secs})
+		}
+	}
+	add(small, "lookup", 2)
+	add(big, "lookup", 1)
+	add(small, "lines", 2)
+	add(big, "lines", 2)
+	add(small, "json", 9)
+	add(big, "json", 3)
+	add(smallOff, "list", 0.5)
+	add(big, "list", 1)
+	claude := speed.Claude{BySize: map[string]speed.Sample{"small": {Seconds: 4, N: 50}}}
+	s := config.Speed{MaxSlower: 20}
+
+	for _, c := range []struct {
+		name string
+		pick config.Pick
+		want map[string]string // skill -> model
+	}{
+		{"fastest", config.Pick{Prefer: "fastest"}, map[string]string{"lookup": "big", "lines": "small", "json": "big", "list": "small"}},
+		{"listed", config.Pick{Prefer: "listed"}, map[string]string{"lookup": "small", "lines": "small", "json": "big", "list": "small"}},
+		{"pinned", config.Pick{Prefer: "fastest", ByTask: map[string]string{"lookup": "small", "json:small": "small"}},
+			map[string]string{"lookup": "small", "json": "big"}}, // a pin needs the model to be fast enough
+	} {
+		g := Evidence(runs, ids, s, c.pick, claude)
+		for sk, model := range c.want {
+			if r := g[sk]["small"]; r.model != model || r.Why != "" {
+				t.Errorf("%s: %s goes to %s (%+v), want %s", c.name, sk, r.model, r, model)
+			}
+		}
+	}
+
+	g := Evidence(runs, ids, s, config.Pick{Prefer: "fastest"}, claude)
+	h, _ := handler(t, g)
+	bigSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"Line 3, says the big one."}}]}`))
+	}))
+	defer bigSrv.Close()
+	h.Models = map[string]Model{small.ID(): h.Models[""], big.ID(): {Client: llm.New(bigSrv.URL, "big")}}
+	if out := call(h, `{"task":"where is Parse defined?","files":["a.go"],"skill":"lookup"}`); !strings.Contains(out, "big one") {
+		t.Errorf("lookup should go to the big model: %q", out)
+	}
+	if out := call(h, `{"task":"which names?","files":["a.go"],"skill":"list"}`); !strings.Contains(out, "isn't reachable") {
+		t.Errorf("a model that isn't connected is refused, not crashed on: %q", out)
+	}
+	h.Models[big.ID()] = Model{Client: llm.New(bigSrv.URL, "big"), Context: 10}
+	if out := call(h, `{"task":"where is Parse defined?","files":["a.go"],"skill":"lookup"}`); !strings.Contains(out, "don't fit") {
+		t.Errorf("the chosen model's own context applies: %q", out)
 	}
 }

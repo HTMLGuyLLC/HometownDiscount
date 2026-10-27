@@ -72,3 +72,38 @@ func TestClaudeModelSetting(t *testing.T) {
 		t.Error("an empty claude_model should be an error")
 	}
 }
+
+func TestPickSettings(t *testing.T) {
+	dir := t.TempDir()
+	if c, _ := Load(dir); c.Pick.Prefer != "fastest" {
+		t.Errorf("default prefer = %q, want fastest", c.Pick.Prefer)
+	}
+	models := `[[local]]
+url = "http://127.0.0.1:1234"
+model = "small"
+[[local]]
+url = "http://127.0.0.1:8001"
+model = "big"
+`
+	os.WriteFile(Path(dir), []byte(models+`[pick]
+prefer = "listed"
+[pick.by_task]
+"lookup" = "small"
+"lines:large" = "big"
+`), 0o600)
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Pick.Prefer != "listed" || c.Pick.PinnedFor("lookup", "large") != "small" || c.Pick.PinnedFor("lines", "large") != "big" || c.Pick.PinnedFor("lines", "small") != "" {
+		t.Errorf("pick = %+v", c.Pick)
+	}
+
+	// A typo must stop htd rather than quietly route work somewhere unexpected.
+	for _, bad := range []string{"prefer = \"smallest\"", "[pick.by_task]\n\"lookpu\" = \"small\"", "[pick.by_task]\n\"lookup:huge\" = \"small\"", "[pick.by_task]\n\"review\" = \"small\"", "[pick.by_task]\n\"lookup\" = \"medium\""} {
+		os.WriteFile(Path(dir), []byte(models+"[pick]\n"+bad+"\n"), 0o600)
+		if _, err := Load(dir); err == nil {
+			t.Errorf("%s: want an error", bad)
+		}
+	}
+}

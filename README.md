@@ -74,6 +74,18 @@ loop = "builtin"                      # the agent loop replays run in
 
 Results are kept per **model · quant · loop**. Changing any of them starts fresh; old results stay on the card.
 
+**More than one model.** Add a `[[local]]` block for each, e.g. a big model next to a small, fast one, or several small ones that each do a few things well (`htd setup` offers to add more). Each model earns its own proof per task and size; `htd bench` and `htd replay` run every model in turn (`--model` runs just one), and a model whose server is down is skipped. `ask_local` hands each task to the fastest model that has proven it and is within your speed limit. List smaller models first: a tie goes to the one listed first. To choose differently:
+
+```toml
+[pick]
+prefer = "fastest"           # or "listed": the first model in your list that has proven the task
+[pick.by_task]               # "skill:size" beats "skill"; used only while that model is proven and fast enough
+"lookup" = "your-small-model"
+"lines:large" = "your-big-model"
+```
+
+Skills: `json`, `lookup`, `lines`, `list`, `files`. A pinned model must be one in your `[[local]]` list. All models share one lock, so only one runs at a time: their timings stay fair, and two models never fill your memory at once.
+
 **Speed limits.** A task the model has proven goes local only if it's at most `max_slower` percent slower than Claude. Set a different limit for a task, or a task at one size; the most specific setting wins:
 
 ```toml
@@ -98,11 +110,11 @@ Claude's side of the comparison costs nothing: for skill checks, htd times how l
 
 | Command | What it does |
 | --- | --- |
-| `htd setup` | First-run wizard: spend map, your local model, then snapshots |
+| `htd setup` | First-run wizard: spend map, your local models, then snapshots |
 | `htd map [--days 30] [--json]` | Spend map: jobs, cost and cheaper-model prices per job type |
-| `htd bench [--repo .] [--max 150] [--timeout 5m]` | Skill checks from a repo, easiest first; stops early when a size clearly can't pass |
-| `htd replay [--max 40] [--types find,review] [--days 30]` | Replay past jobs on the local model; resumable (done jobs are skipped) |
-| `htd card [--details]` | What the model has earned; `--details` shows every number |
+| `htd bench [--repo .] [--max 150] [--timeout 5m]` | Skill checks from a repo on each local model, easiest first; stops early when a size clearly can't pass |
+| `htd replay [--max 40] [--types find,review] [--days 30]` | Replay past jobs on each local model; resumable (done jobs are skipped) |
+| `htd card [--details]` | What each model has earned; `--details` shows every number |
 | `htd mcp` | MCP server with the `ask_local` tool |
 | `htd probe --url URL` | Check a server: models, context, quant, speed, tool calls |
 | `htd gold [--fidelity N]` | How many past jobs can be replayed |
@@ -110,7 +122,7 @@ Claude's side of the comparison costs nothing: for skill checks, htd times how l
 | `htd hooks [on\|off]` | Snapshots: save your repo's uncommitted files each time Claude starts a subagent, so replays see what each job saw (a Claude Code hook) |
 | `htd forget [--all] [--yes]` | Delete what htd stored in `~/.htd` after asking (`--all` also deletes your settings and htd's hook) |
 
-`bench` and `replay` also take `--url`, `--model` and `--allow-remote` to override the config for one run. Every command takes `--help`.
+`bench` and `replay` also take `--url`, `--model` and `--allow-remote` to run one model instead of every configured one (`--max` applies to each model). Every command takes `--help`.
 
 **What's stored, all in `~/.htd`:** `config.toml`, `runs.jsonl` (one line per graded replay or check), `answers/` (each answer next to the expected one, for review by hand), `delegations.jsonl` (each `ask_local` call: skill, size, outcome; no file contents), `cache/` (Claude's typical times: medians only, no transcript content), `snapshots/` (uncommitted files saved as subagents start, when snapshots are on; kept 60 days). See [PRIVACY.md](PRIVACY.md).
 

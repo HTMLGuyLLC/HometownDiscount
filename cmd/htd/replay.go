@@ -60,7 +60,7 @@ func runReplay(args []string, stdout, stderr io.Writer) error {
 	url := fs.String("url", defURL, "local model server URL")
 	model := fs.String("model", defModel, "model to replay on (default: the first one served)")
 	days := fs.Int("days", 30, "how many days of history to replay from")
-	max := fs.Int("max", 40, "stop after this many replays")
+	max := fs.Int("max", 40, "stop after this many replays (for each model)")
 	types := fs.String("types", "", "comma-separated job types (default: all gradable)")
 	root := fs.String("projects", history.DefaultRoot(), "Claude Code transcripts folder")
 	allowRemote := fs.Bool("allow-remote", false, "allow a model server that isn't on this machine or local network (your code goes there)")
@@ -73,28 +73,69 @@ func runReplay(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	srv, rung, modelID, err := probeRung(ctx, *url, *model, *allowRemote || remoteAllowed(cfg))
-	if err != nil {
-		return err
-	}
-	rung = withConfigQuant(rung, cfg)
-
 	st, err := store.Open(dir)
 	if err != nil {
 		return err
 	}
+	rp := &replayRun{dir: dir, cfg: cfg, st: st, root: *root, days: *days, types: *types, max: *max, out: stdout}
+	models := localModels(fs, cfg, *url, *model, *allowRemote)
+	replayed := 0
+	var failed error
+	for _, m := range models {
+		err := rp.model(ctx, m)
+		if err == nil {
+			replayed++
+			continue
+		}
+		if len(models) == 1 || ctx.Err() != nil || errors.Is(err, errLowMemory) {
+			return err
+		}
+		// One model's server being down doesn't stop the others.
+		fmt.Fprintf(stdout, "Skipped %s: %v\n\n", m.Model, err)
+		failed = err
+	}
+	if replayed == 0 {
+		return failed
+	}
+	fmt.Fprintln(stdout, "Run `htd card` to see where each job type stands.")
+	return nil
+}
+
+// replayRun is one `htd replay` run: past jobs replayed on each model in turn.
+type replayRun struct {
+	dir     string
+	cfg     config.Config
+	st      *store.Store
+	root    string
+	days    int
+	types   string
+	max     int
+	out     io.Writer
+	history *history.History
+}
+
+// model replays up to max jobs on one model.
+func (rp *replayRun) model(ctx context.Context, m config.Local) error {
+	srv, rung, modelID, err := probeRung(ctx, m.URL, m.Model, m.AllowRemote)
+	if err != nil {
+		return err
+	}
+	rung = withConfigQuant(rung, rp.cfg)
+	st, dir, stdout := rp.st, rp.dir, rp.out
 	done, err := st.Done(rung.ID())
 	if err != nil {
 		return err
 	}
-	h, err := history.Scan(*root, time.Now().AddDate(0, 0, -*days))
-	if err != nil {
-		return err
+	if rp.history == nil {
+		// Scanned once the first server answers, for every model.
+		if rp.history, err = history.Scan(rp.root, time.Now().AddDate(0, 0, -rp.days)); err != nil {
+			return err
+		}
+		claudeTimes(dir, rp.root, rp.history, rp.days, rp.cfg.Speed.ClaudeModel, nil) // the scan is done anyway: keep Claude's times current
 	}
-	claudeTimes(dir, *root, h, *days, cfg.Speed.ClaudeModel, nil) // the scan is done anyway: keep Claude's times current
-	candidates, byID := replayCandidates(h.Jobs, done, *types)
+	candidates, byID := replayCandidates(rp.history.Jobs, done, rp.types)
 	if len(candidates) == 0 {
-		fmt.Fprintln(stdout, "Nothing new to replay on this setup. Run `htd card` to see the results.")
+		fmt.Fprintf(stdout, "Nothing new to replay on this setup (%s).\n\n", rung.Label())
 		return nil
 	}
 	prior, err := priorEvidence(st, rung.ID())
@@ -104,7 +145,7 @@ func runReplay(args []string, stdout, stderr io.Writer) error {
 	bar := ladder.Bar(ladder.DefaultST, ladder.DefaultMargin)
 	order := replayOrder(candidates, prior)
 	sched := schedule.New(order, candidates, prior, bar)
-	fmt.Fprintf(stdout, "Replaying up to %d jobs on %s\nEasiest job types first, small jobs before large; a tier stops as soon as it clearly can't reach the bar.\n\n", *max, rung.Label())
+	fmt.Fprintf(stdout, "Replaying up to %d jobs on %s\nEasiest job types first, small jobs before large; a tier stops as soon as it clearly can't reach the bar.\n\n", rp.max, rung.Label())
 	keepAwake()
 
 	// Repo exports are full copies; each run gets its own and deletes it.
@@ -120,7 +161,7 @@ func runReplay(args []string, stdout, stderr io.Writer) error {
 	var ran, passed int
 	skipped := map[string]int{}
 	touched := map[schedule.Key]bool{}
-	for ran < *max {
+	for ran < rp.max {
 		sj, ok := sched.Next()
 		if !ok {
 			break
@@ -193,7 +234,7 @@ func runReplay(args []string, stdout, stderr io.Writer) error {
 			}
 		}
 	}
-	fmt.Fprintln(stdout, "Run `htd card` to see where each job type stands.")
+	fmt.Fprintln(stdout)
 	return nil
 }
 

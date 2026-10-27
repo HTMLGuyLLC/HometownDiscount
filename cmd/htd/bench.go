@@ -56,15 +56,6 @@ func runBench(args []string, stdout, stderr io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	srv, rung, mod, err := probeRung(ctx, *url, *model, *allowRemote || remoteAllowed(cfg))
-	if err != nil {
-		return err
-	}
-	rung = withConfigQuant(rung, cfg)
-	tasks, err := skills.Generate(*repo)
-	if err != nil {
-		return err
-	}
 	st, err := store.Open(dir)
 	if err != nil {
 		return err
@@ -73,54 +64,94 @@ func runBench(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	b := benchRun{dir: dir, st: st, runs: runs, tasks: tasks, repo: filepath.Base(*repo), srv: srv, ctxSize: ctxOf(srv, mod), max: *max, out: stdout}
-	plain := llm.New(srv.URL, mod)
-	plain.HTTP.Timeout = *timeout
+	models := localModels(fs, cfg, *url, *model, *allowRemote)
+	var tasks []skills.Task
+	generated, benched := false, 0
+	var failed error
+	for _, m := range models {
+		srv, rung, mod, err := probeRung(ctx, m.URL, m.Model, m.AllowRemote)
+		if err == nil && !generated {
+			// Built once the first server answers: a big repo takes a while.
+			if tasks, err = skills.Generate(*repo); err != nil {
+				return err
+			}
+			generated = true
+		}
+		if err == nil {
+			b := benchRun{dir: dir, st: st, runs: runs, tasks: tasks, repo: filepath.Base(*repo), srv: srv, ctxSize: ctxOf(srv, mod), max: *max, out: stdout}
+			err = b.model(ctx, withConfigQuant(rung, cfg), mod, *timeout)
+		}
+		if err == nil {
+			benched++
+			continue
+		}
+		if len(models) == 1 || ctx.Err() != nil || errors.Is(err, errLowMemory) {
+			return err
+		}
+		// One model's server being down doesn't stop the others.
+		fmt.Fprintf(stdout, "Skipped %s: %v\n\n", m.Model, err)
+		failed = err
+	}
+	if benched == 0 {
+		return failed
+	}
+	if len(models) > 1 {
+		fmt.Fprintln(stdout, "Run `htd card` to see what each model can be trusted with.")
+	} else {
+		fmt.Fprintln(stdout, "Run `htd card` to see what this model can be trusted with.")
+	}
+	return nil
+}
+
+// model runs the checks left for one model. A model that thinks first is
+// also checked with thinking off: often far quicker, and as good at some
+// skills. ask_local picks per skill and size.
+func (b *benchRun) model(ctx context.Context, rung store.Rung, mod string, timeout time.Duration) error {
+	plain := llm.New(b.srv.URL, mod)
+	plain.HTTP.Timeout = timeout
 	off := rung
 	off.Effort = store.ThinkingOff
-	// A model that thinks first is also checked with thinking off: often far
-	// quicker, and as good at some skills. ask_local picks per skill and size.
 	ways := []way{{rung, plain}}
-	thinks, known := cachedThinks(dir, rung.ID(), time.Now())
+	thinks, known := cachedThinks(b.dir, rung.ID(), time.Now())
 	if !known && (b.pending(rung) || b.pending(off)) {
-		if !waitForMemory(ctx, stdout) {
+		if !waitForMemory(ctx, b.out) {
 			if ctx.Err() != nil {
 				return errors.New("skill checks stopped (0 done)")
 			}
 			return fmt.Errorf("skill checks stopped (0 done): %w", errLowMemory)
 		}
+		var err error
 		if thinks, known, err = b.thinks(ctx, plain); err != nil {
 			return err
 		}
 		if known {
-			saveThinks(dir, rung.ID(), thinks, time.Now())
+			saveThinks(b.dir, rung.ID(), thinks, time.Now())
 		}
 	}
 	if thinks {
-		quiet := llm.New(srv.URL, mod)
-		quiet.HTTP.Timeout = *timeout
+		quiet := llm.New(b.srv.URL, mod)
+		quiet.HTTP.Timeout = timeout
 		quiet.NoThinking = true
 		ways = []way{{off, quiet}, {rung, plain}}
-		fmt.Fprintln(stdout, "This model thinks before it answers, so it's checked with thinking off first (much quicker), then on.\nask_local uses whichever is proven and faster for each skill and size.")
-		fmt.Fprintln(stdout)
+		fmt.Fprintln(b.out, "This model thinks before it answers, so it's checked with thinking off first (much quicker), then on.\nask_local uses whichever is proven and faster for each skill and size.")
+		fmt.Fprintln(b.out)
 	}
 	keepAwake()
 	for _, w := range ways {
 		err := b.run(ctx, w)
 		if errors.Is(err, llm.ErrThinking) {
-			fmt.Fprintln(stdout, "This server doesn't let the model answer without thinking, so it's only checked with thinking on.")
-			fmt.Fprintln(stdout)
+			fmt.Fprintln(b.out, "This server doesn't let the model answer without thinking, so it's only checked with thinking on.")
+			fmt.Fprintln(b.out)
 			continue
 		}
 		if err != nil {
 			return err
 		}
 	}
-	fmt.Fprintln(stdout, "Run `htd card` to see what this model can be trusted with.")
 	return nil
 }
 
-// benchRun is one `htd bench` run: skill checks from one repo on one model.
+// benchRun is one `htd bench` run of one model: skill checks from one repo.
 type benchRun struct {
 	dir     string
 	st      *store.Store
@@ -378,18 +409,39 @@ func printSkipped(w io.Writer, skipped map[string]int) {
 // withConfigQuant uses the quant the user wrote in config.toml when the
 // server doesn't report one, so unknown quants don't all share one key.
 func withConfigQuant(r store.Rung, cfg config.Config) store.Rung {
-	if len(cfg.Local) > 0 && r.Model == cfg.Local[0].Model {
-		if q := cfg.Local[0].Quant; q != "" && q != "auto" && (r.Quant == "" || r.Quant == "quant unknown") {
+	for _, l := range cfg.Local {
+		if r.Model != l.Model {
+			continue
+		}
+		if q := l.Quant; q != "" && q != "auto" && (r.Quant == "" || r.Quant == "quant unknown") {
 			r.Quant = q
 		}
+		break
 	}
 	return r
 }
 
-// remoteAllowed reports whether the configured model opted in to a server
-// off this machine.
-func remoteAllowed(cfg config.Config) bool {
-	return len(cfg.Local) > 0 && cfg.Local[0].AllowRemote
+// localModels are the models bench and replay run on: the one named with
+// --url or --model, or else every model in config.toml in the order listed
+// (with none set up, the first model the default server offers).
+func localModels(fs *flag.FlagSet, cfg config.Config, url, model string, allowRemote bool) []config.Local {
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if set["url"] || set["model"] || len(cfg.Local) == 0 {
+		l := config.Local{URL: url, Model: model, AllowRemote: allowRemote}
+		for _, c := range cfg.Local {
+			if c.Model == model && (c.URL == url || !set["url"]) { // --model alone: that model's own server
+				l.URL, l.AllowRemote = c.URL, l.AllowRemote || c.AllowRemote
+				break
+			}
+		}
+		return []config.Local{l}
+	}
+	out := append([]config.Local(nil), cfg.Local...)
+	for i := range out {
+		out[i].AllowRemote = out[i].AllowRemote || allowRemote
+	}
+	return out
 }
 
 // probeRung finds the server and model and returns the setup identity

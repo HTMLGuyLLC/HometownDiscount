@@ -91,34 +91,47 @@ func unsafeRoot(root, home string) string {
 	return ""
 }
 
-// connect probes the configured server. If the server is down when Claude
-// Code starts, later calls try again (at most every 30 seconds).
+// connect probes every configured model. A model whose server is down is
+// left out, and later calls try again (at most every 30 seconds); the others
+// work meanwhile.
 func (r *refreshing) connect() {
 	r.tried = time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	l := r.cfg.Local[0]
-	srv, rung, modelID, err := probeRung(ctx, l.URL, l.Model, l.AllowRemote)
-	if err != nil {
-		r.h.Setup = err
+	r.rungIDs, r.missing = nil, 0
+	models := map[string]delegate.Model{}
+	var labels []string
+	var failed error
+	for _, l := range r.cfg.Local {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		srv, rung, modelID, err := probeRung(ctx, l.URL, l.Model, l.AllowRemote)
+		cancel()
+		if err != nil {
+			failed = err
+			r.missing++
+			continue
+		}
+		rung = withConfigQuant(rung, r.cfg)
+		off := rung
+		off.Effort = store.ThinkingOff
+		quiet := llm.New(srv.URL, modelID) // the cleaned URL: no credentials
+		quiet.NoThinking = true
+		// Wait up to 2 minutes for a replay or skill check to finish; after
+		// that, tell Claude the model is busy.
+		size := ctxOf(srv, modelID)
+		models[rung.ID()] = delegate.Model{Client: slot.Locked{Inner: llm.New(srv.URL, modelID), Dir: r.dir, Wait: 2 * time.Minute}, Context: size}
+		models[off.ID()] = delegate.Model{Client: slot.Locked{Inner: quiet, Dir: r.dir, Wait: 2 * time.Minute}, Context: size}
+		r.rungIDs = append(r.rungIDs, rung.ID(), off.ID()) // thinking off counts only once a bench has proven it
+		labels = append(labels, rung.Label())
+	}
+	r.h.Models = models
+	if len(labels) == 0 {
+		r.h.Setup = failed
 		return
 	}
-	rung = withConfigQuant(rung, r.cfg)
-	r.h.Context = ctxOf(srv, modelID)
 	r.h.Setup = nil
-	off := rung
-	off.Effort = store.ThinkingOff
-	r.rungIDs = []string{rung.ID(), off.ID()} // thinking off counts only once a bench has proven it
-	r.h.Label = rung.Label()
-	// Wait up to 2 minutes for a replay or skill check to finish; after
-	// that, tell Claude the model is busy.
-	r.h.Client = slot.Locked{Inner: llm.New(srv.URL, modelID), Dir: r.dir, Wait: 2 * time.Minute} // the cleaned URL: no credentials
-	quiet := llm.New(srv.URL, modelID)
-	quiet.NoThinking = true
-	r.h.Clients = map[string]llm.Chatter{off.ID(): slot.Locked{Inner: quiet, Dir: r.dir, Wait: 2 * time.Minute}}
+	r.h.Label = strings.Join(labels, " or ")
 }
 
-// refreshing re-reads the evidence, the speed settings and Claude's times
+// refreshing re-reads the evidence, the speed and pick settings and Claude's times
 // before each list and call, so skills proven by a `htd bench` run, or a
 // changed speed limit, apply without restarting the server.
 type refreshing struct {
@@ -126,24 +139,25 @@ type refreshing struct {
 	st      *store.Store
 	cfg     config.Config
 	dir     string
-	rungIDs []string // the configured model, as it runs by default and with thinking off
+	rungIDs []string // every configured model that answered, as it runs by default and with thinking off
+	missing int      // configured models that didn't answer
 	tried   time.Time
 	h       *delegate.Handler
 }
 
 func (r *refreshing) refresh() {
-	if len(r.rungIDs) == 0 && len(r.cfg.Local) > 0 && !r.tried.IsZero() && time.Since(r.tried) > 30*time.Second {
+	if (len(r.rungIDs) == 0 || r.missing > 0) && len(r.cfg.Local) > 0 && !r.tried.IsZero() && time.Since(r.tried) > 30*time.Second {
 		r.connect()
 	}
 	if len(r.rungIDs) == 0 {
 		return
 	}
 	if c, err := config.Load(r.dir); err == nil {
-		r.cfg.Speed = c.Speed // a bad edit keeps the last good settings
+		r.cfg.Speed, r.cfg.Pick = c.Speed, c.Pick // a bad edit keeps the last good settings
 	}
 	claude, _ := speed.Load(r.dir) // none yet: speed isn't compared, proof decides
 	if runs, err := r.st.All(); err == nil {
-		r.h.Gate = delegate.Evidence(runs, r.rungIDs, r.cfg.Speed, claude)
+		r.h.Gate = delegate.Evidence(runs, r.rungIDs, r.cfg.Speed, r.cfg.Pick, claude)
 	}
 }
 

@@ -313,7 +313,7 @@ func TestSetupOffersSnapshots(t *testing.T) {
 	settings := filepath.Join(claude, "settings.json")
 	srv := newFakeServer(t, modelList("alpha-4bit"), healthyModel)
 
-	out := setup(t, srv.URL+"\nn\n")
+	out := setup(t, srv.URL+"\nn\nn\n") // no other model, no snapshots
 	if !strings.Contains(out, "3/3 Snapshots") {
 		t.Errorf("snapshots not offered:\n%s", out)
 	}
@@ -333,5 +333,60 @@ func TestSetupOffersSnapshots(t *testing.T) {
 	hermetic(t)
 	if out := setup(t, "none\n"); strings.Contains(out, "3/3") {
 		t.Errorf("snapshots offered without a model:\n%s", out)
+	}
+}
+
+// More models can be added after the main one: each is tested and saved in
+// order, a later run keeps them, and "none" removes them all.
+func TestSetupAddsAnotherModel(t *testing.T) {
+	home, _ := hermetic(t)
+	srv := newFakeServer(t, modelList("alpha-4bit", "beta-8bit"), healthyModel)
+
+	out := setup(t, srv.URL+"\n1\ny\n\n2\nn\nn\n")
+	cfg := savedConfig(t, home)
+	if len(cfg.Local) != 2 || cfg.Local[0].Model != "alpha-4bit" || cfg.Local[1].Model != "beta-8bit" || cfg.Local[1].URL != srv.URL {
+		t.Fatalf("want alpha then beta, got %+v\n%s", cfg.Local, out)
+	}
+	if !strings.Contains(out, "Also set up: beta-8bit") || !strings.Contains(out, "fastest model that's proven") {
+		t.Errorf("output:\n%s", out)
+	}
+
+	// Picking the second model as the main one doesn't list it twice.
+	out = setup(t, "\n2\nn\nn\n")
+	if cfg := savedConfig(t, home); len(cfg.Local) != 1 || cfg.Local[0].Model != "beta-8bit" {
+		t.Errorf("want just beta, got %+v\n%s", cfg.Local, out)
+	}
+
+	setup(t, srv.URL+"\n1\ny\n\n2\nn\nn\n")
+	if out := setup(t, "none\n"); len(savedConfig(t, home).Local) != 0 || !strings.Contains(out, "Removed the local models") {
+		t.Errorf("none removes every model:\n%s", out)
+	}
+}
+
+func TestPlaceModel(t *testing.T) {
+	a := config.Local{URL: "u1", Model: "a"}
+	b := config.Local{URL: "u1", Model: "b"}
+	c := config.Local{URL: "u2", Model: "c"}
+	names := func(ls []config.Local) (s string) {
+		for _, l := range ls {
+			s += l.Model
+		}
+		return s
+	}
+	for _, tc := range []struct {
+		list []config.Local
+		i    int
+		l    config.Local
+		want string
+	}{
+		{nil, 0, a, "a"},
+		{[]config.Local{a, b}, 0, c, "cb"},
+		{[]config.Local{a, b}, 2, c, "abc"},
+		{[]config.Local{a, b}, 0, b, "b"},       // the new main model was listed after it
+		{[]config.Local{a, b}, 2, a, "b" + "a"}, // added again: moves to the end
+	} {
+		if got := names(placeModel(tc.list, tc.i, tc.l)); got != tc.want {
+			t.Errorf("placeModel(%s, %d, %s) = %s, want %s", names(tc.list), tc.i, tc.l.Model, got, tc.want)
+		}
 	}
 }

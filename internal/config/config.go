@@ -56,10 +56,22 @@ type Speed struct {
 	ByTask      map[string]any `toml:"by_task,omitempty"`
 }
 
+// Pick decides which local model takes a skill when more than one has
+// proven it and is fast enough. Prefer is "fastest" (the quickest at that
+// size; ties go to the one listed first) or "listed" (the first in the
+// [[local]] list). ByTask pins a skill ("lookup") or skill and size
+// ("lookup:large") to a model, used whenever that model is proven and fast
+// enough for it.
+type Pick struct {
+	Prefer string            `toml:"prefer"`
+	ByTask map[string]string `toml:"by_task,omitempty"`
+}
+
 // Config is the whole file.
 type Config struct {
 	Routing     string      `toml:"routing"` // ask | auto | off
 	Local       []Local     `toml:"local"`
+	Pick        Pick        `toml:"pick"`
 	Speed       Speed       `toml:"speed"`
 	Calibration Calibration `toml:"calibration"`
 	Report      Report      `toml:"report"`
@@ -69,6 +81,7 @@ type Config struct {
 func Default() Config {
 	return Config{
 		Routing:     "ask",
+		Pick:        Pick{Prefer: "fastest"},
 		Speed:       Speed{MaxSlower: 20, ClaudeModel: "auto"},
 		Calibration: Calibration{CapUSD: 0, Rungs: []string{"haiku"}},
 		Report:      Report{WeeklySummary: true, SupportPrompt: true, SupportMinUSD: 5},
@@ -92,6 +105,12 @@ func Load(dir string) (Config, error) {
 		return c, err
 	}
 	if err := c.Speed.check(); err != nil {
+		return c, fmt.Errorf("%s: %w", Path(dir), err)
+	}
+	if c.Pick.Prefer == "" {
+		c.Pick.Prefer = "fastest"
+	}
+	if err := c.Pick.check(c.Local); err != nil {
 		return c, fmt.Errorf("%s: %w", Path(dir), err)
 	}
 	for i := range c.Local {
@@ -162,6 +181,41 @@ func (s Speed) check() error {
 		}
 	}
 	return nil
+}
+
+// check rejects pick settings that would silently do nothing.
+func (p Pick) check(local []Local) error {
+	if p.Prefer != "fastest" && p.Prefer != "listed" {
+		return fmt.Errorf(`[pick] prefer = %q: use "fastest" or "listed"`, p.Prefer)
+	}
+	var models []string
+	for _, l := range local {
+		models = append(models, l.Model)
+	}
+	keys := make([]string, 0, len(p.ByTask))
+	for k := range p.ByTask {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		skill, size, hasSize := strings.Cut(k, ":")
+		if !contains(skills.Order, skill) || (hasSize && !contains(skills.SizeOrder, size)) {
+			return fmt.Errorf("[pick.by_task] %q: use a skill (%s), optionally with :small, :medium or :large", k, strings.Join(skills.Order, ", "))
+		}
+		if !contains(models, p.ByTask[k]) {
+			return fmt.Errorf("[pick.by_task] %q = %q: that model isn't in your [[local]] list (%s)", k, p.ByTask[k], strings.Join(models, ", "))
+		}
+	}
+	return nil
+}
+
+// PinnedFor is the model pinned to a skill and size, "" when none: the most
+// specific setting wins.
+func (p Pick) PinnedFor(skill, size string) string {
+	if m, ok := p.ByTask[skill+":"+size]; ok {
+		return m
+	}
+	return p.ByTask[skill]
 }
 
 func contains(list []string, s string) bool {

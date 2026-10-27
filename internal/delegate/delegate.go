@@ -38,26 +38,36 @@ type Gate map[string]map[string]Route
 
 // Route is the decision for one skill and size.
 type Route struct {
-	Why  string // "" when the local model takes it; otherwise why Claude keeps it (too slow)
-	Rung string // the setup that earned it, e.g. the model with thinking off
-	secs float64
+	Why   string // "" when a local model takes it; otherwise why Claude keeps it (too slow)
+	Rung  string // the setup that earned it: a model, and how it runs (e.g. thinking off)
+	model string
+	order int // the model's place in the user's list
+	secs  float64
 }
 
-// Evidence reads the skills and sizes the local model has proven and is fast
-// enough for. Proof at a size covers the smaller sizes; speed is judged per
-// size, and a size with too few timings goes by proof. rungIDs are the ways
-// one model can run (thinking on and off): each skill and size goes to the
-// fastest one that's proven and quick enough.
-func Evidence(runs []store.Run, rungIDs []string, s config.Speed, c speed.Claude) Gate {
+// Evidence reads the skills and sizes the local models have proven and are
+// fast enough for. Proof at a size covers the smaller sizes; speed is judged
+// per size, and a size with too few timings goes by proof. rungIDs are every
+// way to run every configured model (each one by default and with thinking
+// off), in the user's order; each earns its own proof. Each skill and size
+// goes to one that's proven and fast enough, chosen by p: a pinned model,
+// then the fastest (or the first listed), then the first listed.
+func Evidence(runs []store.Run, rungIDs []string, s config.Speed, p config.Pick, c speed.Claude) Gate {
 	rows := card.WithSpeed(card.Build(runs, nil), s, c)
+	order := map[string]int{} // model -> its place in the list
 	g := Gate{}
 	for _, id := range rungIDs {
+		model := modelOf(id)
+		if _, ok := order[model]; !ok {
+			order[model] = len(order)
+		}
 		for sk, sizes := range evidence(rows, id, s) {
 			if g[sk] == nil {
 				g[sk] = map[string]Route{}
 			}
 			for size, r := range sizes {
-				if cur, ok := g[sk][size]; !ok || r.beats(cur) {
+				r.model, r.order = model, order[model]
+				if cur, ok := g[sk][size]; !ok || r.beats(cur, p, p.PinnedFor(sk, size)) {
 					g[sk][size] = r
 				}
 			}
@@ -66,14 +76,34 @@ func Evidence(runs []store.Run, rungIDs []string, s config.Speed, c speed.Claude
 	return g
 }
 
-// beats reports whether r is the better way to run a skill and size: one the
-// local model takes beats one it doesn't, then the faster one. A size proven
-// only through a bigger one has no time of its own and counts as slower.
-func (r Route) beats(o Route) bool {
+// modelOf is the model a rung id names (the id itself when it isn't one).
+func modelOf(id string) string {
+	var r store.Rung
+	if json.Unmarshal([]byte(id), &r) != nil || r.Model == "" {
+		return id
+	}
+	return r.Model
+}
+
+// beats reports whether r is the better way to run a skill and size than o.
+// One a local model takes beats one it doesn't; then the pinned model; then,
+// with prefer = "listed", the model listed first; then the faster one; then
+// the model listed first. A size proven only through a bigger one has no time
+// of its own and counts as slower.
+func (r Route) beats(o Route, p config.Pick, pinned string) bool {
 	if (r.Why == "") != (o.Why == "") {
 		return r.Why == ""
 	}
-	return r.secs > 0 && (o.secs == 0 || r.secs < o.secs)
+	if pinned != "" && (r.model == pinned) != (o.model == pinned) {
+		return r.model == pinned
+	}
+	if p.Prefer == "listed" && r.order != o.order {
+		return r.order < o.order
+	}
+	if r.secs != o.secs {
+		return r.secs > 0 && (o.secs == 0 || r.secs < o.secs)
+	}
+	return r.order < o.order
 }
 
 // evidence is Evidence for one setup.
@@ -181,16 +211,18 @@ type Delegation struct {
 
 // Handler serves ask_local.
 type Handler struct {
-	Root   string // the project folder; files outside it are refused
-	Client llm.Chatter
-	// Clients run the model another way, by the rung that earned a route
-	// (e.g. thinking off); a route from any other rung uses Client.
-	Clients map[string]llm.Chatter
-	Label   string // the setup, in plain words
-	Gate    Gate
-	Setup   error // non-nil when the local server couldn't be reached at start
-	Context int   // tokens of context the server gives the model; 0 = unknown
-	Log     func(Delegation)
+	Root   string           // the project folder; files outside it are refused
+	Models map[string]Model // by rung id: each way to run each local model
+	Label  string           // the local models, in plain words
+	Gate   Gate
+	Setup  error // non-nil when no local server could be reached at start
+	Log    func(Delegation)
+}
+
+// Model is one way to run a local model.
+type Model struct {
+	Client  llm.Chatter
+	Context int // tokens of context the server gives the model; 0 = unknown
 }
 
 const skillHelp = `json: a value in a JSON file · lookup: where something is defined · lines: which lines mention a word · list: the names a file declares · files: which files mention something`
@@ -268,9 +300,6 @@ func (h *Handler) Call(ctx context.Context, name string, raw json.RawMessage) mc
 	if d.Size == "" {
 		return refuse(fmt.Sprintf("the files are %d lines and %d KB, more than skill checks go up to (%d lines, 256 KB).", lines, bytes>>10, skills.MaxLines))
 	}
-	if h.Context > 0 && len(blocks)/3+1000 > h.Context {
-		return refuse(fmt.Sprintf("the files don't fit the server's context (%d tokens); raise it in your model server's settings.", h.Context))
-	}
 	route, ok := h.Gate[a.Skill][d.Size]
 	if ok && route.Why != "" {
 		return refuse(fmt.Sprintf("%q at %d lines is proven for %s, but Claude does it: %s.", a.Skill, lines, h.Label, route.Why))
@@ -283,11 +312,14 @@ func (h *Handler) Call(ctx context.Context, name string, raw json.RawMessage) mc
 		return refuse(fmt.Sprintf("%q at %d lines isn't proven for %s (it takes: %s).", a.Skill, lines, h.Label, takes))
 	}
 
-	client := h.Client
-	if c, ok := h.Clients[route.Rung]; ok {
-		client = c
+	m, ok := h.Models[route.Rung]
+	if !ok {
+		return refuse(fmt.Sprintf("the local model proven for %q (%s) isn't reachable right now.", a.Skill, route.model))
 	}
-	reply, _, err := client.Chat(ctx, []llm.Message{
+	if m.Context > 0 && len(blocks)/3+1000 > m.Context {
+		return refuse(fmt.Sprintf("the files don't fit the server's context (%d tokens); raise it in your model server's settings.", m.Context))
+	}
+	reply, _, err := m.Client.Chat(ctx, []llm.Message{
 		{Role: "system", Content: skills.SystemPrompt},
 		{Role: "user", Content: blocks + "\nTask: " + a.Task},
 	}, nil)

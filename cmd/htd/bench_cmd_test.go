@@ -2,13 +2,17 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"flag"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/config"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/skills"
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/store"
 )
 
 // benchRepo is a small repo with source and JSON files, so skill checks of
@@ -200,8 +204,8 @@ func TestWithConfigQuantAndRemoteAllowed(t *testing.T) {
 	if got := withConfigQuant(rung, cfg).Quant; got != "Q4_K_M" {
 		t.Errorf("withConfigQuant = %q, want the configured Q4_K_M", got)
 	}
-	if !remoteAllowed(cfg) {
-		t.Error("allow_remote = true should be honored")
+	if ms := localModels(flags(t), cfg, "", "", false); len(ms) != 1 || !ms[0].AllowRemote {
+		t.Errorf("allow_remote = true should be honored: %+v", ms)
 	}
 	other := rung
 	other.Model = "other"
@@ -278,5 +282,81 @@ func TestBenchWhenThinkingCannotBeTurnedOff(t *testing.T) {
 	}
 	if !strings.Contains(out, "doesn't let the model answer without thinking") {
 		t.Errorf("output:\n%s", out)
+	}
+}
+
+// flags is bench's --url and --model, set as given ("url", "http://...").
+func flags(t *testing.T, set ...string) *flag.FlagSet {
+	t.Helper()
+	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	fs.String("url", "", "")
+	fs.String("model", "", "")
+	var args []string
+	for i := 0; i+1 < len(set); i += 2 {
+		args = append(args, "--"+set[i], set[i+1])
+	}
+	if err := fs.Parse(args); err != nil {
+		t.Fatal(err)
+	}
+	return fs
+}
+
+// Bench and replay run every configured model in order, unless one is named.
+func TestLocalModels(t *testing.T) {
+	cfg := config.Config{Local: []config.Local{
+		{URL: "http://127.0.0.1:1234", Model: "small"},
+		{URL: "http://127.0.0.1:8001", Model: "big", AllowRemote: true},
+	}}
+	names := func(ms []config.Local) string {
+		var out []string
+		for _, m := range ms {
+			out = append(out, m.Model+"@"+m.URL)
+		}
+		return strings.Join(out, ", ")
+	}
+	if got := names(localModels(flags(t), cfg, "http://127.0.0.1:1234", "small", false)); got != "small@http://127.0.0.1:1234, big@http://127.0.0.1:8001" {
+		t.Errorf("none named: %s", got)
+	}
+	if got := localModels(flags(t, "model", "big"), cfg, "http://127.0.0.1:1234", "big", false); names(got) != "big@http://127.0.0.1:8001" || !got[0].AllowRemote {
+		t.Errorf("--model alone uses that model's own server and settings: %+v", got)
+	}
+	if got := localModels(flags(t, "url", "http://10.0.0.5:8000", "model", "big"), cfg, "http://10.0.0.5:8000", "big", false); names(got) != "big@http://10.0.0.5:8000" || got[0].AllowRemote {
+		t.Errorf("another server needs its own --allow-remote: %+v", got)
+	}
+	if got := names(localModels(flags(t), config.Config{}, "http://127.0.0.1:8000", "", false)); got != "@http://127.0.0.1:8000" {
+		t.Errorf("nothing set up: %s", got)
+	}
+}
+
+// With several models set up, bench checks each in turn, each under its own
+// setup; one whose server is down is skipped and the others still run.
+func TestBenchChecksEachConfiguredModel(t *testing.T) {
+	home, _ := hermetic(t)
+	repo := benchRepo(t)
+	chat, total := answersFor(t, repo, true)
+	srv := newFakeServer(t, modelList("small-q4", "big-q8"), chat)
+	down := newFakeServer(t, modelList("gone-q4"), chat)
+	down.Close()
+	cfg := config.Default()
+	cfg.Local = []config.Local{{URL: srv.URL, Model: "small-q4"}, {URL: down.URL, Model: "gone-q4"}, {URL: srv.URL, Model: "big-q8"}}
+	if err := config.Save(home, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := runBench([]string{"--repo", repo}, &out, &out); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	byModel := map[string]int{}
+	for _, r := range storedRuns(t, home) {
+		var rung store.Rung
+		json.Unmarshal([]byte(r.Rung), &rung)
+		byModel[rung.Model]++
+	}
+	if byModel["small-q4"] != total || byModel["big-q8"] != total || len(byModel) != 2 {
+		t.Errorf("want every check on both reachable models, got %v", byModel)
+	}
+	small, big := strings.Index(out.String(), "on small-q4"), strings.Index(out.String(), "on big-q8")
+	if small < 0 || big < small || !strings.Contains(out.String(), "Skipped gone-q4") || !strings.Contains(out.String(), "what each model can be trusted with") {
+		t.Errorf("output:\n%s", out.String())
 	}
 }

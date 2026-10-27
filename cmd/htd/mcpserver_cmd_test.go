@@ -455,3 +455,45 @@ func TestMCPHelp(t *testing.T) {
 		t.Errorf("err = %v, output %q", err, out.String())
 	}
 }
+
+// ask_local uses every configured model: each skill goes to the fastest one
+// that has proven it, and a model whose server is down doesn't stop the rest.
+func TestMCPUsesEveryConfiguredModel(t *testing.T) {
+	home, _ := hermetic(t)
+	mcpProject(t)
+	answer := func(who string) func(int, chatRequest) fakeReply {
+		return func(int, chatRequest) fakeReply { return fakeReply{Content: who + ": Charge is on line 3.", Tokens: 8} }
+	}
+	small := newFakeServer(t, modelList("small-q4"), answer("small"))
+	big := newFakeServer(t, modelList("big-q8"), answer("big"))
+	gone := newFakeServer(t, modelList("gone-q4"), answer("gone"))
+	gone.Close()
+	cfg := config.Default()
+	cfg.Local = []config.Local{{URL: small.URL, Model: "small-q4"}, {URL: gone.URL, Model: "gone-q4"}, {URL: big.URL, Model: "big-q8"}}
+	if err := config.Save(home, cfg); err != nil {
+		t.Fatal(err)
+	}
+	rungOf := func(srv *fakeServer, model string) string {
+		_, rung, _, err := probeRung(context.Background(), srv.URL, model, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rung.ID()
+	}
+	proveLookup(t, home, rungOf(big, "big-q8")) // 2 seconds a check
+	s := startMCP(t)
+	ask := map[string]any{"task": "On which line is Charge defined?", "files": []string{"app.go"}, "skill": "lookup"}
+
+	if text, isErr := s.askLocal(ask); isErr || !strings.HasSuffix(text, "big: Charge is on line 3.") {
+		t.Errorf("only the big model has proven lookup: %q", text)
+	}
+	var runs []store.Run
+	for i := range 30 {
+		runs = append(runs, store.Run{JobID: fmt.Sprintf("s%d", i), Type: "skill:lookup", Tier: "small", Rung: rungOf(small, "small-q4"),
+			Graded: true, Pass: true, Seconds: 0.5, Turns: 1, At: time.Now()})
+	}
+	addRuns(t, home, runs...)
+	if text, isErr := s.askLocal(ask); isErr || !strings.HasSuffix(text, "small: Charge is on line 3.") {
+		t.Errorf("the small model proved it and is faster: %q", text)
+	}
+}
