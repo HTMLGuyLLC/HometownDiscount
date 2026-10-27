@@ -14,6 +14,7 @@ import (
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/llm"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/mcp"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/slot"
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/speed"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/store"
 )
 
@@ -77,8 +78,9 @@ func (r *refreshing) connect() {
 	r.h.Client = slot.Locked{Inner: llm.New(l.URL, modelID), Dir: r.dir, Wait: 2 * time.Minute}
 }
 
-// refreshing re-reads the evidence before each list and call, so skills
-// proven by a `htd bench` run show up without restarting the server.
+// refreshing re-reads the evidence, the speed settings and Claude's times
+// before each list and call, so skills proven by a `htd bench` run, or a
+// changed speed limit, apply without restarting the server.
 type refreshing struct {
 	listed string // the proven skills the client last saw
 	st     *store.Store
@@ -96,8 +98,12 @@ func (r *refreshing) refresh() {
 	if r.rungID == "" {
 		return
 	}
+	if c, err := config.Load(r.dir); err == nil {
+		r.cfg.Speed = c.Speed // a bad edit keeps the last good settings
+	}
+	claude, _ := speed.Load(r.dir) // none yet: speed isn't compared, proof decides
 	if runs, err := r.st.All(); err == nil {
-		r.h.Gate = delegate.Evidence(runs, r.rungID)
+		r.h.Gate = delegate.Evidence(runs, r.rungID, r.cfg.Speed, claude)
 	}
 }
 

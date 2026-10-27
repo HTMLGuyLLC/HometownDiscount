@@ -89,6 +89,7 @@ func runReplay(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	claudeTimes(dir, h, *days, nil) // the scan is done anyway: keep Claude's times current
 	candidates, byID := replayCandidates(h.Jobs, done, *types)
 	if len(candidates) == 0 {
 		fmt.Fprintln(stdout, "Nothing new to replay on this setup. Run `htd card` to see the results.")
@@ -291,6 +292,7 @@ func replayOne(ctx context.Context, client llm.Chatter, q queued, rung store.Run
 	run := store.Run{
 		JobID: q.job.AgentID, JobTime: q.job.Start, Type: q.typ, Reference: q.job.Model(), Rung: rung.ID(),
 		Seconds: res.Elapsed.Seconds(), Turns: res.Turns, At: time.Now(), Graded: true,
+		RefSeconds: q.job.Duration().Seconds(),
 	}
 	if err != nil {
 		switch {

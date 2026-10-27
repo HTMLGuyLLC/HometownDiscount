@@ -10,7 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/config"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/llm"
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/speed"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/store"
 )
 
@@ -24,8 +26,8 @@ func TestEvidence(t *testing.T) {
 			store.Run{Rung: "r2", Type: "skill:json", Tier: "small", Graded: true, Pass: true},
 		)
 	}
-	g := Evidence(runs, "r1")
-	if g["lookup"] != "medium" || g["list"] != "" || g["json"] != "" {
+	g := Evidence(runs, "r1", config.Speed{MaxSlower: 20}, speed.Claude{})
+	if len(g["lookup"]) != 2 || g["list"] != nil || g["json"] != nil {
 		t.Errorf("gate = %v", g)
 	}
 	if !g.Allows("lookup", "small") || !g.Allows("lookup", "medium") || g.Allows("lookup", "large") || g.Allows("list", "small") {
@@ -33,6 +35,45 @@ func TestEvidence(t *testing.T) {
 	}
 	if g.Summary() != "lookup (up to 1,000 lines)" {
 		t.Errorf("summary = %q", g.Summary())
+	}
+}
+
+// A proven size that's too slow stays with Claude, with the reason; smaller
+// sizes it's fast enough for still go local, and settings override both ways.
+func TestEvidenceWeighsSpeed(t *testing.T) {
+	var runs []store.Run
+	for i := 0; i < 24; i++ {
+		runs = append(runs,
+			store.Run{Rung: "r1", Type: "skill:lookup", Tier: "small", Graded: true, Pass: true, Seconds: 3},
+			store.Run{Rung: "r1", Type: "skill:lookup", Tier: "medium", Graded: true, Pass: true, Seconds: 40},
+		)
+	}
+	claude := speed.Claude{BySize: map[string]speed.Sample{"small": {Seconds: 3, N: 50}, "medium": {Seconds: 4, N: 50}}}
+	g := Evidence(runs, "r1", config.Speed{MaxSlower: 20}, claude)
+	if !g.Allows("lookup", "small") || g.Allows("lookup", "medium") {
+		t.Fatalf("gate = %v", g)
+	}
+	if why := g["lookup"]["medium"]; !strings.Contains(why, "10.0× Claude's time") || !strings.Contains(why, "limit +20%") {
+		t.Errorf("why = %q", why)
+	}
+	if g.Summary() != "lookup (files up to 200 lines)" {
+		t.Errorf("summary = %q", g.Summary())
+	}
+
+	g = Evidence(runs, "r1", config.Speed{MaxSlower: 20, ByTask: map[string]any{"lookup:medium": "always", "lookup:small": "never"}}, claude)
+	if g.Allows("lookup", "small") || !g.Allows("lookup", "medium") {
+		t.Errorf("overrides ignored: %v", g)
+	}
+	if g.Summary() != "lookup (files of 201-1,000 lines)" {
+		t.Errorf("summary = %q", g.Summary())
+	}
+
+	h, _ := handler(t, Gate{"lookup": {"small": "it's 3.0× Claude's time (your limit +20%)"}})
+	if out := call(h, `{"task":"where is Parse defined?","files":["a.go"],"skill":"lookup"}`); !strings.Contains(out, "proven for Qwen, but Claude does it: it's 3.0×") {
+		t.Errorf("refusal = %q", out)
+	}
+	if d := h.Tools()[0].Description; !strings.Contains(d, "slower than the user allows") {
+		t.Errorf("description = %q", d)
 	}
 }
 
@@ -54,7 +95,7 @@ func call(h *Handler, a string) string {
 }
 
 func TestCall(t *testing.T) {
-	h, log := handler(t, Gate{"lookup": "small"})
+	h, log := handler(t, Gate{"lookup": {"small": ""}})
 	if out := call(h, `{"task":"where is Parse defined?","files":["a.go"],"skill":"lookup"}`); !strings.Contains(out, "Line 3.") || strings.Contains(out, "think") {
 		t.Errorf("answered = %q", out)
 	}
@@ -95,7 +136,7 @@ func TestDescriptionFollowsEvidence(t *testing.T) {
 	if d := h.Tools()[0].Description; !strings.Contains(d, "hasn't proven any skill") {
 		t.Errorf("description = %q", d)
 	}
-	h.Gate = Gate{"json": "large"}
+	h.Gate = Gate{"json": {"small": "", "medium": "", "large": ""}}
 	if d := h.Tools()[0].Description; !strings.Contains(d, "json (up to 4,000 lines)") {
 		t.Errorf("description = %q", d)
 	}

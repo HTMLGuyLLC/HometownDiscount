@@ -11,6 +11,7 @@ import (
 	"strconv"
 
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/card"
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/config"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/delegate"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/store"
 )
@@ -23,7 +24,12 @@ func runCard(args []string, stdout, stderr io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	st, err := store.Open(store.DefaultDir())
+	dir := store.DefaultDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(dir)
 	if err != nil {
 		return err
 	}
@@ -39,12 +45,15 @@ func runCard(args []string, stdout, stderr io.Writer) error {
 		}
 	}
 	rows := card.Build(runs, labels)
+	if len(rows) > 0 {
+		rows = card.WithSpeed(rows, cfg.Speed, claudeTimes(dir, nil, 30, stdout))
+	}
 	if *details {
 		card.Render(stdout, rows)
 		return nil
 	}
 	card.Headline(stdout, rows)
-	delegationSummary(stdout, filepath.Join(store.DefaultDir(), "delegations.jsonl"))
+	delegationSummary(stdout, filepath.Join(dir, "delegations.jsonl"))
 	if len(rows) > 0 {
 		fmt.Fprintln(stdout, "Every number behind this: `htd card --details`.")
 	}

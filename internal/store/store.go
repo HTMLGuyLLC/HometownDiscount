@@ -33,8 +33,11 @@ type Run struct {
 	Made      []string  `json:"made_up,omitempty"` // fabricated anchors, URLs or facts (first few)
 	Severe    bool      `json:"severe,omitempty"`  // made-up paths or unparseable output
 	Seconds   float64   `json:"seconds"`
-	Turns     int       `json:"turns"`
-	At        time.Time `json:"at"` // when the replay ran
+	// RefSeconds is how long the original job took (replays only), so the
+	// local model's time can be set against Claude's on the same work.
+	RefSeconds float64   `json:"ref_seconds,omitempty"`
+	Turns      int       `json:"turns"`
+	At         time.Time `json:"at"` // when the replay ran
 	// Regraded is set on a corrected copy of a run that `htd regrade --apply`
 	// graded again with newer rules. It keeps the run's At, so its place in
 	// the proof order doesn't change; the latest grade of a job wins.

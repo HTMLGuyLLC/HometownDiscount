@@ -16,11 +16,13 @@ import (
 	"time"
 
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/card"
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/config"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/ladder"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/llm"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/mcp"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/secrets"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/skills"
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/speed"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/store"
 )
 
@@ -30,19 +32,39 @@ const (
 	MaxBytes = 512 << 10
 )
 
-// Gate is what the local model has earned: skill -> largest proven size.
-type Gate map[string]string
+// Gate is what the local model may take, per skill and input size: "" when
+// it takes it, or why Claude keeps a size the model has proven (too slow).
+// Sizes that aren't proven are absent.
+type Gate map[string]map[string]string
 
-// Evidence reads the proven skills for one setup from stored results.
-func Evidence(runs []store.Run, rungID string) Gate {
-	g := Gate{}
-	for _, row := range card.Build(runs, nil) {
-		if row.Rung != rungID || row.State != ladder.Proven || !strings.HasPrefix(row.Type, skills.TypePrefix) {
+// Evidence reads, for one setup, the skills and sizes the local model has
+// proven and is fast enough for. Proof at a size covers the smaller sizes;
+// speed is judged per size, and a size with too few timings goes by proof.
+func Evidence(runs []store.Run, rungID string, s config.Speed, c speed.Claude) Gate {
+	proven := map[string]string{} // skill -> largest proven size
+	rows := map[string]card.Row{} // "skill/size" -> row
+	for _, row := range card.WithSpeed(card.Build(runs, nil), s, c) {
+		sk, ok := strings.CutPrefix(row.Type, skills.TypePrefix)
+		if row.Rung != rungID || !ok {
 			continue
 		}
-		sk := strings.TrimPrefix(row.Type, skills.TypePrefix)
-		if sizeRank(row.Tier) > sizeRank(g[sk]) {
-			g[sk] = row.Tier
+		rows[sk+"/"+row.Tier] = row
+		if row.State == ladder.Proven && sizeRank(row.Tier) > sizeRank(proven[sk]) {
+			proven[sk] = row.Tier
+		}
+	}
+	g := Gate{}
+	for sk, top := range proven {
+		g[sk] = map[string]string{}
+		for _, size := range skills.SizeOrder[:sizeRank(top)] {
+			v := speed.Decide(speed.RuleFor(s, sk, size), 0, false)
+			if row, ok := rows[sk+"/"+size]; ok {
+				v = row.Speed
+			}
+			g[sk][size] = ""
+			if v.Kept {
+				g[sk][size] = v.Why()
+			}
 		}
 	}
 	return g
@@ -57,19 +79,41 @@ func sizeRank(s string) int {
 	return 0
 }
 
-// Allows reports whether a skill is proven at (or above) an input size.
+// Allows reports whether the local model takes a skill at an input size.
 func (g Gate) Allows(skill, size string) bool {
-	return size != "" && sizeRank(g[skill]) >= sizeRank(size)
+	why, ok := g[skill][size]
+	return ok && why == ""
 }
 
-// Summary lists proven skills in plain words, e.g. "lookup (up to 1,000 lines)".
+// Empty reports whether the local model takes nothing.
+func (g Gate) Empty() bool { return g.Summary() == "" }
+
+// Summary lists what the local model takes in plain words, e.g.
+// "lookup (up to 1,000 lines), json (files of 201-1,000 lines)".
 func (g Gate) Summary() string {
-	limits := map[string]string{skills.Small: "200", skills.Medium: "1,000", skills.Large: "4,000"}
+	ranges := map[string]string{skills.Small: "files up to 200 lines", skills.Medium: "files of 201-1,000 lines", skills.Large: "files of 1,001-4,000 lines"}
+	upTo := map[string]string{skills.Small: "files up to 200 lines", skills.Medium: "up to 1,000 lines", skills.Large: "up to 4,000 lines"}
 	var parts []string
 	for _, sk := range skills.Order {
-		if size, ok := g[sk]; ok {
-			parts = append(parts, fmt.Sprintf("%s (up to %s lines)", sk, limits[size]))
+		var sizes []string
+		for _, size := range skills.SizeOrder {
+			if g.Allows(sk, size) {
+				sizes = append(sizes, size)
+			}
 		}
+		if len(sizes) == 0 {
+			continue
+		}
+		// A run of sizes from the smallest reads as one range.
+		if sizes[0] == skills.Small && sizeRank(sizes[len(sizes)-1]) == len(sizes) {
+			parts = append(parts, fmt.Sprintf("%s (%s)", sk, upTo[sizes[len(sizes)-1]]))
+			continue
+		}
+		var words []string
+		for _, size := range sizes {
+			words = append(words, ranges[size])
+		}
+		parts = append(parts, fmt.Sprintf("%s (%s)", sk, strings.Join(words, ", ")))
 	}
 	return strings.Join(parts, ", ")
 }
@@ -107,8 +151,10 @@ func (h *Handler) Tools() []mcp.Tool {
 		desc += "The local model server isn't reachable right now, so every call is refused; do the work yourself."
 	case len(h.Gate) == 0:
 		desc += "The local model hasn't proven any skill yet (the user can run `htd bench`), so every call is refused; do the work yourself."
+	case h.Gate.Empty():
+		desc += "The local model's proven skills are all slower than the user allows, so every call is refused; do the work yourself."
 	default:
-		desc += "Use it only for these proven skills and sizes: " + h.Gate.Summary() + ". Anything else is refused. The answer comes from a smaller model: double-check anything that matters."
+		desc += "Use it only for these skills and sizes, which it has proven and is fast enough for: " + h.Gate.Summary() + ". Anything else is refused. The answer comes from a smaller model: double-check anything that matters."
 	}
 	enum := append([]string(nil), skills.Order...)
 	schema, _ := json.Marshal(map[string]any{
@@ -171,12 +217,15 @@ func (h *Handler) Call(ctx context.Context, name string, raw json.RawMessage) mc
 	if h.Context > 0 && len(blocks)/3+1000 > h.Context {
 		return refuse(fmt.Sprintf("the files don't fit the server's context (%d tokens); raise it in your model server's settings.", h.Context))
 	}
+	if why, ok := h.Gate[a.Skill][d.Size]; ok && why != "" {
+		return refuse(fmt.Sprintf("%q at %d lines is proven for %s, but Claude does it: %s.", a.Skill, lines, h.Label, why))
+	}
 	if !h.Gate.Allows(a.Skill, d.Size) {
-		proven := h.Gate.Summary()
-		if proven == "" {
-			proven = "nothing yet"
+		takes := h.Gate.Summary()
+		if takes == "" {
+			takes = "nothing yet"
 		}
-		return refuse(fmt.Sprintf("%q at %d lines isn't proven for %s (proven: %s).", a.Skill, lines, h.Label, proven))
+		return refuse(fmt.Sprintf("%q at %d lines isn't proven for %s (it takes: %s).", a.Skill, lines, h.Label, takes))
 	}
 
 	reply, _, err := h.Client.Chat(ctx, []llm.Message{

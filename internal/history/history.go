@@ -36,6 +36,7 @@ type Job struct {
 	Background  bool
 	SpawnDepth  int
 	Start       time.Time
+	End         time.Time // the job's last transcript line
 	Requests    []Request
 	Tools       map[string]int // tool calls by tool name
 	Commands    []string       // the shell commands it ran (Bash tool inputs)
@@ -56,11 +57,30 @@ func (j *Job) Model() string {
 	return best
 }
 
+// Duration is how long the job took, start to finish.
+func (j *Job) Duration() time.Duration {
+	if j.End.Before(j.Start) {
+		return 0
+	}
+	return j.End.Sub(j.Start)
+}
+
+// ReadSample is one time Claude read a file and then answered: how big the
+// file was and how long Claude's next message took to finish.
+type ReadSample struct {
+	Lines   int
+	Bytes   int
+	Seconds float64
+	Model   string
+	Time    time.Time
+}
+
 // History is everything read from the transcripts in a time window.
 type History struct {
 	Jobs  []Job
-	Main  []Request // main-conversation requests (not subagents)
-	Files int       // transcript files read
+	Main  []Request    // main-conversation requests (not subagents)
+	Reads []ReadSample // Claude's time to answer after reading one file
+	Files int          // transcript files read
 }
 
 // DefaultRoot is where Claude Code keeps transcripts.
@@ -108,8 +128,12 @@ func Scan(root string, since time.Time) (*History, error) {
 
 	for _, path := range subagentFiles {
 		h.Files++
-		job, err := readSubagent(path, root)
-		if err != nil || job == nil || job.Start.Before(since) {
+		job, reads, err := readSubagent(path, root)
+		if err != nil || job == nil {
+			continue
+		}
+		h.addReads(reads, since)
+		if job.Start.Before(since) {
 			continue
 		}
 		if s, ok := spawns[job.AgentID]; ok {
@@ -180,6 +204,89 @@ type rawBlock struct {
 	Name      string          `json:"name"`
 	Input     json.RawMessage `json:"input"`
 	ToolUseID string          `json:"tool_use_id"`
+	Content   json.RawMessage `json:"content"`
+	IsError   bool            `json:"is_error"`
+}
+
+// readTimer pairs a Read tool result with the message Claude wrote next. Only
+// a result that arrives alone counts: with several, the time isn't one file's.
+type readTimer struct {
+	reads   map[string]bool // tool_use ids of Read calls
+	pending *ReadSample     // a lone Read result waiting for Claude's reply
+	at      time.Time       // when that result arrived
+	reply   string          // the id of Claude's reply message
+	samples []ReadSample
+}
+
+func (r *readTimer) see(e *rawEntry) {
+	if r.reads == nil {
+		r.reads = map[string]bool{}
+	}
+	t := parseTime(e.Timestamp)
+	if e.Message == nil || t.IsZero() {
+		return
+	}
+	bs := blocks(e.Message.Content)
+	if e.Type == "assistant" {
+		if r.pending != nil && (r.reply == "" || r.reply == e.Message.ID) {
+			r.reply = e.Message.ID
+			r.pending.Seconds = t.Sub(r.at).Seconds()
+			r.pending.Model = pricing.Normalize(e.Message.Model)
+		} else {
+			r.flush()
+		}
+		for _, b := range bs {
+			if b.Type == "tool_use" && b.Name == "Read" {
+				r.reads[b.ID] = true
+			}
+		}
+		return
+	}
+	var results []rawBlock
+	for _, b := range bs {
+		if b.Type == "tool_result" {
+			results = append(results, b)
+		}
+	}
+	if len(results) == 0 {
+		return
+	}
+	r.flush()
+	if b := results[0]; len(results) == 1 && r.reads[b.ToolUseID] && !b.IsError {
+		if text := resultText(b.Content); text != "" {
+			r.pending, r.at = &ReadSample{Lines: strings.Count(strings.TrimSuffix(text, "\n"), "\n") + 1, Bytes: len(text), Time: t}, t
+		}
+	}
+}
+
+// flush keeps the pending sample once Claude's reply has been seen.
+func (r *readTimer) flush() {
+	if r.pending != nil && r.reply != "" && r.pending.Seconds > 0 {
+		r.samples = append(r.samples, *r.pending)
+	}
+	r.pending, r.reply = nil, ""
+}
+
+// resultText is a tool result's text, whether stored as a string or as text blocks.
+func resultText(content json.RawMessage) string {
+	var s string
+	if json.Unmarshal(content, &s) == nil {
+		return s
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(content, &parts) != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, p := range parts {
+		if p.Type == "text" {
+			b.WriteString(p.Text)
+		}
+	}
+	return b.String()
 }
 
 type agentInput struct {
@@ -223,10 +330,12 @@ func (r *requests) add(e *rawEntry) {
 
 func readMain(path string, since time.Time, h *History, spawns map[string]spawnInfo) error {
 	var reqs requests
+	var timer readTimer
 	agentCalls := map[string]agentInput{} // tool_use id -> Agent call input
 	err := eachEntry(path, func(e *rawEntry) {
 		if !e.IsSidechain {
 			reqs.add(e)
+			timer.see(e)
 		}
 		if e.Message == nil {
 			return
@@ -256,7 +365,17 @@ func readMain(path string, since time.Time, h *History, spawns map[string]spawnI
 			h.Main = append(h.Main, r)
 		}
 	}
+	timer.flush()
+	h.addReads(timer.samples, since)
 	return err
+}
+
+func (h *History) addReads(samples []ReadSample, since time.Time) {
+	for _, s := range samples {
+		if !s.Time.Before(since) {
+			h.Reads = append(h.Reads, s)
+		}
+	}
 }
 
 type rawMeta struct {
@@ -265,9 +384,10 @@ type rawMeta struct {
 	SpawnDepth  int    `json:"spawnDepth"`
 }
 
-func readSubagent(path, root string) (*Job, error) {
+func readSubagent(path, root string) (*Job, []ReadSample, error) {
 	job := &Job{Path: path, Tools: map[string]int{}}
 	var reqs requests
+	var timer readTimer
 	seenTools := map[string]bool{}
 	err := eachEntry(path, func(e *rawEntry) {
 		if job.AgentID == "" && e.AgentID != "" {
@@ -276,10 +396,16 @@ func readSubagent(path, root string) (*Job, error) {
 		if job.SessionID == "" && e.SessionID != "" {
 			job.SessionID = e.SessionID
 		}
-		if t := parseTime(e.Timestamp); !t.IsZero() && (job.Start.IsZero() || t.Before(job.Start)) {
-			job.Start = t
+		if t := parseTime(e.Timestamp); !t.IsZero() {
+			if job.Start.IsZero() || t.Before(job.Start) {
+				job.Start = t
+			}
+			if t.After(job.End) {
+				job.End = t
+			}
 		}
 		reqs.add(e)
+		timer.see(e)
 		if e.Type != "assistant" || e.Message == nil {
 			return
 		}
@@ -299,18 +425,19 @@ func readSubagent(path, root string) (*Job, error) {
 		}
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	timer.flush()
 	if job.AgentID == "" {
 		job.AgentID = strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), "agent-"), ".jsonl")
 	}
 	// Ids end up in file names; anything but a plain id is skipped.
 	if !safeID.MatchString(job.AgentID) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	job.Requests = reqs.list
 	if len(job.Requests) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if rel, err := filepath.Rel(root, path); err == nil {
 		job.Project = strings.SplitN(filepath.ToSlash(rel), "/", 2)[0]
@@ -319,7 +446,7 @@ func readSubagent(path, root string) (*Job, error) {
 	if b, err := os.ReadFile(strings.TrimSuffix(path, ".jsonl") + ".meta.json"); err == nil && json.Unmarshal(b, &meta) == nil {
 		job.AgentType, job.Description, job.SpawnDepth = meta.AgentType, meta.Description, meta.SpawnDepth
 	}
-	return job, nil
+	return job, timer.samples, nil
 }
 
 var safeID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)

@@ -4,7 +4,7 @@ Hometown Discount runs entirely on your computer. It has no servers, no accounts
 
 ## What it reads
 
-- **Your Claude Code transcripts** in `~/.claude/projects` (or `$CLAUDE_CONFIG_DIR/projects`): to build the spend map and to find past jobs to replay. They're read, never changed.
+- **Your Claude Code transcripts** in `~/.claude/projects` (or `$CLAUDE_CONFIG_DIR/projects`): to build the spend map, to find past jobs to replay, and to time how long Claude takes to answer (for the speed limits). They're read, never changed.
 - **Your repos**, at the commits your past jobs saw: to rebuild a copy for each replay and to generate skill checks.
 - **Your local model server**, at the URL you give it.
 
@@ -23,7 +23,7 @@ Everything lives in `~/.htd` (or `$HTD_HOME`), readable only by your user accoun
 | `runs.jsonl` | One line per graded replay or skill check: ids, job type, pass/fail, timing. No prompts; a failed replay's notes can name file paths or identifiers it got wrong. |
 | `answers/` | Each answer next to the expected one (from Claude, or computed for skill checks), so you can check the grading by hand. These can contain code and text from your projects. |
 | `delegations.jsonl` | One line per `ask_local` call: skill, size, outcome, timing. No file contents. |
-| `cache/` | Temporary repo copies during a replay, deleted when it ends |
+| `cache/` | Temporary repo copies during a replay, deleted when it ends; `claude-speed.json`, Claude's median answer times by file size (numbers only) |
 
 Delete it all with `htd forget --all`, or everything except your settings with `htd forget`.
 

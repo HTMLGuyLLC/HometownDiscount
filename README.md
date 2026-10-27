@@ -13,8 +13,10 @@ Free and source-available ([license](#license)) · `htd` on the command line · 
 - **`htd map`** shows where your Claude Code subagent spend goes, and what it would cost on cheaper models.
 - **`htd bench`** checks your local model on exact tasks built from your own repo (find where something is defined, find the lines that mention a word, list what a file declares, read a JSON value, find which files mention something), at growing file sizes.
 - **`htd replay`** has your local model redo past jobs Claude already finished, on the same code, and grades each answer against Claude's.
-- **`htd card`** shows what the model has earned: what it can take now, what it hasn't proven yet, and what it isn't good enough for.
+- **`htd card`** shows what the model has earned: what it can take now, what it's accurate at but too slow for, what it hasn't proven yet, and what it isn't good enough for.
 - **`htd mcp`** gives Claude an `ask_local` tool, so Claude can hand your local model the small work it has proven, and nothing else.
+
+Work goes local only when the model is **accurate and fast enough**: by default, at most 20% slower than Claude on the same kind and size of task. You can change that per task and size.
 
 Grading is mechanical (no AI judges another AI), so the same answer always gets the same grade. Everything runs on your machine and costs $0.
 
@@ -72,6 +74,23 @@ loop = "builtin"                      # the agent loop replays run in
 
 Results are kept per **model · quant · loop**. Changing any of them starts fresh; old results stay on the card.
 
+**Speed limits.** A task the model has proven goes local only if it's at most `max_slower` percent slower than Claude. Set a different limit for a task, or a task at one size; the most specific setting wins:
+
+```toml
+[speed]
+max_slower = 20              # default for everything; -1 turns the speed check off
+
+[speed.by_task]              # "task:size" beats "task" beats the default
+"lookup:small" = 5           # small lookups: within 5% of Claude
+"review:large" = 25          # big reviews: up to 25% slower is fine
+"files:large" = "never"      # Claude always does it
+"json" = "always"            # skip the speed check (it still has to be proven accurate)
+```
+
+Tasks: `json`, `lookup`, `lines`, `list`, `files` (skill checks) and `find`, `extract`, `classify`, `transform`, `review`, `research` (replays). Sizes: `small` (up to 200 lines), `medium` (up to 1,000), `large` (up to 4,000). A typo stops htd with a message instead of being ignored. `ask_local` picks up changes on its next call.
+
+Claude's side of the comparison costs nothing: for skill checks, htd times how long Claude took to answer after reading a file that size in your own transcripts (re-measured weekly); for replays, it uses how long the original job took. Until there are at least 5 timings on both sides, accuracy alone decides.
+
 ## Commands
 
 | Command | What it does |
@@ -89,11 +108,12 @@ Results are kept per **model · quant · loop**. Changing any of them starts fre
 
 `bench` and `replay` also take `--url`, `--model` and `--allow-remote` to override the config for one run. Every command takes `--help`.
 
-**What's stored, all in `~/.htd`:** `config.toml`, `runs.jsonl` (one line per graded replay or check), `answers/` (each answer next to the expected one, for review by hand), `delegations.jsonl` (each `ask_local` call: skill, size, outcome; no file contents). See [PRIVACY.md](PRIVACY.md).
+**What's stored, all in `~/.htd`:** `config.toml`, `runs.jsonl` (one line per graded replay or check), `answers/` (each answer next to the expected one, for review by hand), `delegations.jsonl` (each `ask_local` call: skill, size, outcome; no file contents), `cache/` (Claude's typical times: medians only, no transcript content). See [PRIVACY.md](PRIVACY.md).
 
 ## Reading the card
 
 - **proven**: passed often enough, with enough checks, that the result isn't luck (a 95% lower bound at or above the bar);
+- **too slow**: proven, but slower than your speed limit allows, so Claude keeps it (`--details` shows how much slower);
 - **learning** ("not proven yet"): not enough evidence either way yet;
 - **not good enough**: stopped early, because it clearly can't reach the bar;
 - **hint**: 200 jobs without proof.
