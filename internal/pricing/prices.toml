@@ -1,0 +1,87 @@
+# API prices in USD per million tokens, used to put a dollar value on usage.
+# Subscription users don't pay per token; these are "API-equivalent" values.
+# Source: Anthropic API pricing as of 2026-10-06. Update this file when prices change.
+#
+# Cache writes are derived from the input price: 1.25x for the 5-minute cache,
+# 2x for the 1-hour cache. Cache reads differ by model, so they're listed.
+# fast_multiplier applies to requests that ran in fast mode.
+# long_* prices apply when a request's prompt is longer than long_threshold tokens.
+
+[models.claude-fable-5-1]
+family = "fable"
+input = 10.00
+output = 50.00
+cache_read = 0.25
+
+[models.claude-fable-5]
+family = "fable"
+input = 10.00
+output = 50.00
+cache_read = 1.00
+
+[models.claude-opus-5-5]
+family = "opus"
+input = 4.00
+output = 20.00
+cache_read = 0.20
+fast_multiplier = 2.0
+
+[models.claude-opus-5]
+family = "opus"
+input = 5.00
+output = 25.00
+cache_read = 0.50
+fast_multiplier = 2.0
+
+[models.claude-opus-4-8]
+family = "opus"
+input = 5.00
+output = 25.00
+cache_read = 0.50
+fast_multiplier = 2.0
+
+[models.claude-opus-4-7]
+family = "opus"
+input = 5.00
+output = 25.00
+cache_read = 0.50
+
+[models.claude-opus-4-6]
+family = "opus"
+input = 5.00
+output = 25.00
+cache_read = 0.50
+
+[models.claude-sonnet-5-5]
+family = "sonnet"
+input = 2.00
+output = 10.00
+cache_read = 0.20
+
+[models.claude-sonnet-5]
+family = "sonnet"
+input = 2.00
+output = 10.00
+cache_read = 0.20
+
+[models.claude-sonnet-4-6]
+family = "sonnet"
+input = 3.00
+output = 15.00
+cache_read = 0.30
+
+[models.claude-haiku-5-5]
+family = "haiku"
+input = 0.10
+output = 0.50
+cache_read = 0.01
+long_threshold = 100000
+long_input = 0.50
+long_output = 2.50
+long_cache_read = 0.05
+
+[models.claude-haiku-4-5]
+family = "haiku"
+input = 1.00
+output = 5.00
+cache_read = 0.10
