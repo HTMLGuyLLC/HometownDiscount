@@ -314,7 +314,7 @@ func (b *benchRun) run(ctx context.Context, w way) error {
 			if errorsInRow++; errorsInRow >= 3 {
 				return fmt.Errorf("skill checks stopped (%d done): the server keeps failing: %w", ran, err)
 			}
-			skipped["server error"]++
+			skipped[serverErrorWhy(err)]++
 			continue
 		case reply.FinishReason == "length":
 			// Thinking used up the answer budget. ask_local refuses these

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -23,13 +24,13 @@ import (
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/jobtype"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/ladder"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/llm"
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/localhttp"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/loop"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/memory"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/pricing"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/recording"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/sandbox"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/schedule"
-	"github.com/HTMLGuyLLC/HometownDiscount/internal/servers"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/slot"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/store"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/workspace"
@@ -407,7 +408,7 @@ func replayOne(ctx context.Context, client llm.Chatter, q queued, rung store.Run
 		}
 		// A crash or busy server on this job: not the model's fault, so
 		// nothing is recorded and the job is tried again next time.
-		return store.Run{}, "server error", nil
+		return store.Run{}, serverErrorWhy(err), nil
 	}
 	_ = st.SaveAnswer(rung.ID(), q.job.AgentID, it.Answer, res.Answer)
 	if res.Stopped != "" {
@@ -515,14 +516,38 @@ var errServerDown = errors.New("the server stopped answering")
 // room than a one-shot ask_local answer.
 const replayMaxTokens = 16384
 
-// serverUp returns a check that the model server answers a probe.
+// serverUp returns a check that the model server answers. It asks only for
+// the model list every OpenAI-compatible server has: a full probe tries
+// other servers' paths too, and each miss is an error line in the server's
+// own log.
 func serverUp(ctx context.Context, url string) func() bool {
+	client := localhttp.Client(15 * time.Second)
 	return func() bool {
-		c, cancel := context.WithTimeout(ctx, 15*time.Second)
-		defer cancel()
-		_, err := servers.Probe(c, url)
-		return err == nil
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(url, "/")+"/v1/models", nil)
+		if err != nil {
+			return false
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return false
+		}
+		resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
 	}
+}
+
+// serverErrorWhy is the skip reason for a request the server failed, with
+// what it said, so a run's summary can be read afterwards: "server error
+// (engine crashed)" rather than a bare count.
+func serverErrorWhy(err error) string {
+	msg := err.Error()
+	if se := (*llm.ServerError)(nil); errors.As(err, &se) {
+		msg = se.Message
+	}
+	if i := strings.LastIndex(msg, `": `); i >= 0 {
+		msg = msg[i+3:] // drop the request a network error names: Post "http://...":
+	}
+	return "server error (" + shorten(strings.TrimSpace(msg), 80) + ")"
 }
 
 // serverWait is how long a batch waits for a crashed or recovering model

@@ -3,11 +3,14 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/history"
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/llm"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/schedule"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/store"
 )
@@ -233,7 +236,7 @@ func TestReplayServerProblemsAreSkippedNotRecorded(t *testing.T) {
 		reply  fakeReply
 		reason string
 	}{
-		{"server error", fakeReply{Status: 500, Err: "engine crashed"}, "1 server error"},
+		{"server error", fakeReply{Status: 500, Err: "engine crashed"}, "1 server error (engine crashed)"},
 		{"context overflow", fakeReply{Status: 400, Err: "maximum context length exceeded"}, "1 too long for the server's context"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -608,6 +611,20 @@ func TestGradeAnswerDispatch(t *testing.T) {
 	for _, typ := range []string{"edit", "explore", ""} {
 		if _, ok := gradeAnswer(typ, "x", "x", nil, nil); ok {
 			t.Errorf("%q has no grader", typ)
+		}
+	}
+}
+
+// A server-error skip says what the server said, without the request URL,
+// so a run's summary can be read afterwards.
+func TestServerErrorWhy(t *testing.T) {
+	for err, want := range map[error]string{
+		&llm.ServerError{Status: 500, Message: "Metal backend is unhealthy"}:                                                                                         "server error (Metal backend is unhealthy)",
+		fmt.Errorf(`Post "http://127.0.0.1:8001/v1/chat/completions": %w`, errors.New("context deadline exceeded (Client.Timeout exceeded while awaiting headers)")): "server error (context deadline exceeded (Client.Timeout exceeded while awaiting headers))",
+		errors.New(strings.Repeat("x", 100)): "server error (" + strings.Repeat("x", 80) + "…)",
+	} {
+		if got := serverErrorWhy(err); got != want {
+			t.Errorf("serverErrorWhy(%v) = %q, want %q", err, got, want)
 		}
 	}
 }
