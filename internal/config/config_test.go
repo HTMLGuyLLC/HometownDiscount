@@ -2,13 +2,14 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
 func TestLoadSave(t *testing.T) {
 	dir := t.TempDir()
 	c, err := Load(dir)
-	if err != nil || c.Routing != "ask" || c.Calibration.CapUSD != 0 || !c.Report.SupportPrompt {
+	if err != nil || c.Pick.Prefer != "fastest" || c.Speed.MaxSlower != 20 {
 		t.Fatalf("defaults = %+v, %v", c, err)
 	}
 	c.Local = []Local{{URL: "http://127.0.0.1:8000", Model: "Qwen3.8-27B"}}
@@ -26,9 +27,44 @@ func TestLoadSave(t *testing.T) {
 		t.Errorf("round trip = %+v", got.Local)
 	}
 
-	os.WriteFile(Path(dir), []byte("routing = [broken"), 0o600)
+	os.WriteFile(Path(dir), []byte("speed = [broken"), 0o600)
 	if _, err := Load(dir); err == nil {
 		t.Error("a broken file should be an error, not silently replaced by defaults")
+	}
+}
+
+// A misspelled setting stops htd; settings older versions wrote still load,
+// and are dropped when the file is saved again.
+func TestUnknownAndRetiredSettings(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(Path(dir), []byte("[speed]\nmax_slowr = 5\n"), 0o600)
+	if _, err := Load(dir); err == nil || !strings.Contains(err.Error(), `unknown setting "speed.max_slowr"`) {
+		t.Errorf("a typo should be an error, got %v", err)
+	}
+	old := `routing = "ask"
+
+[[local]]
+  url = "http://127.0.0.1:8000"
+  model = "m"
+  effort = ""
+
+[calibration]
+  calibration_cap_usd = 0.0
+  rungs = ["haiku"]
+
+[report]
+  weekly_summary = true
+`
+	os.WriteFile(Path(dir), []byte(old), 0o600)
+	c, err := Load(dir)
+	if err != nil || len(c.Local) != 1 {
+		t.Fatalf("an old file should still load: %+v, %v", c, err)
+	}
+	if err := Save(dir, c); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(Path(dir)); strings.Contains(string(b), "routing") || strings.Contains(string(b), "calibration") || strings.Contains(string(b), "report") {
+		t.Errorf("retired settings should be dropped on save:\n%s", b)
 	}
 }
 
@@ -54,7 +90,7 @@ max_slower = 10
 	}
 
 	// A typo must stop htd rather than quietly route work somewhere unexpected.
-	for _, bad := range []string{`"lookpu" = 5`, `"lookup:huge" = 5`, `"lookup" = "sometimes"`, `"lookup" = true`} {
+	for _, bad := range []string{`"lookpu" = 5`, `"lookup:huge" = 5`, `"review:medium" = 5`, `"lookup" = "sometimes"`, `"lookup" = true`} {
 		os.WriteFile(Path(dir), []byte("[speed.by_task]\n"+bad+"\n"), 0o600)
 		if _, err := Load(dir); err == nil {
 			t.Errorf("%s: want an error", bad)

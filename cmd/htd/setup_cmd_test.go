@@ -85,7 +85,7 @@ func TestSetupEnterKeepsTheConfiguredServer(t *testing.T) {
 	home, _ := hermetic(t)
 	srv := newFakeServer(t, modelList("alpha-4bit"), healthyModel)
 	if err := config.Save(home, config.Config{
-		Routing: "ask", Speed: config.Default().Speed,
+		Speed: config.Default().Speed,
 		Local: []config.Local{{URL: srv.URL, Model: "old-model", Quant: "auto", Loop: "builtin"}},
 	}); err != nil {
 		t.Fatal(err)
@@ -102,12 +102,12 @@ func TestSetupEnterKeepsTheConfiguredServer(t *testing.T) {
 // Settings the wizard doesn't ask about survive it.
 func TestSetupKeepsSpeedSettings(t *testing.T) {
 	home, _ := hermetic(t)
-	os.WriteFile(config.Path(home), []byte("routing = \"auto\"\n[speed]\nmax_slower = 50.0\nclaude_model = \"claude-opus-5-5\"\n[speed.by_task]\nlookup = \"never\"\n"), 0o600)
+	os.WriteFile(config.Path(home), []byte("[pick]\nprefer = \"listed\"\n[speed]\nmax_slower = 50.0\nclaude_model = \"claude-opus-5-5\"\n[speed.by_task]\nlookup = \"never\"\n"), 0o600)
 
 	setup(t, "none\n")
 
 	cfg := savedConfig(t, home)
-	if cfg.Routing != "auto" || cfg.Speed.MaxSlower != 50 || cfg.Speed.ClaudeModel != "claude-opus-5-5" || cfg.Speed.ByTask["lookup"] != "never" {
+	if cfg.Pick.Prefer != "listed" || cfg.Speed.MaxSlower != 50 || cfg.Speed.ClaudeModel != "claude-opus-5-5" || cfg.Speed.ByTask["lookup"] != "never" {
 		t.Errorf("setup dropped existing settings: %+v", cfg)
 	}
 }

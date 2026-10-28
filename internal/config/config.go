@@ -19,28 +19,13 @@ import (
 
 // Local is one local model: a server URL and a model name.
 type Local struct {
-	URL    string `toml:"url"`
-	Model  string `toml:"model"`
-	Quant  string `toml:"quant"` // "auto" = detect, or e.g. "4bit", "Q4_K_M"
-	Loop   string `toml:"loop"`  // "builtin" in v1
-	Effort string `toml:"effort,omitempty"`
+	URL   string `toml:"url"`
+	Model string `toml:"model"`
+	Quant string `toml:"quant"` // "auto" = detect, or e.g. "4bit", "Q4_K_M"
+	Loop  string `toml:"loop"`  // the agent loop replays run in: "builtin"
 	// AllowRemote opts in to a server off this machine and local network:
 	// replays and ask_local would send code there.
 	AllowRemote bool `toml:"allow_remote,omitempty"`
-}
-
-// Calibration runs Claude rungs on past jobs with the user's own API key.
-type Calibration struct {
-	CapUSD     float64  `toml:"calibration_cap_usd"` // monthly cap; 0 = off
-	Rungs      []string `toml:"rungs"`
-	OwnControl bool     `toml:"own_control"`
-}
-
-// Report controls the weekly summary.
-type Report struct {
-	WeeklySummary bool    `toml:"weekly_summary"`
-	SupportPrompt bool    `toml:"support_prompt"`
-	SupportMinUSD float64 `toml:"support_prompt_min_usd"`
 }
 
 // Speed decides when the local model is too slow to be worth it: a proven
@@ -69,24 +54,22 @@ type Pick struct {
 
 // Config is the whole file.
 type Config struct {
-	Routing     string      `toml:"routing"` // ask | auto | off
-	Local       []Local     `toml:"local"`
-	Pick        Pick        `toml:"pick"`
-	Speed       Speed       `toml:"speed"`
-	Calibration Calibration `toml:"calibration"`
-	Report      Report      `toml:"report"`
+	Local []Local `toml:"local"`
+	Pick  Pick    `toml:"pick"`
+	Speed Speed   `toml:"speed"`
 }
 
 // Default is what a fresh install uses.
 func Default() Config {
 	return Config{
-		Routing:     "ask",
-		Pick:        Pick{Prefer: "fastest"},
-		Speed:       Speed{MaxSlower: 20, ClaudeModel: "auto"},
-		Calibration: Calibration{CapUSD: 0, Rungs: []string{"haiku"}},
-		Report:      Report{WeeklySummary: true, SupportPrompt: true, SupportMinUSD: 5},
+		Pick:  Pick{Prefer: "fastest"},
+		Speed: Speed{MaxSlower: 20, ClaudeModel: "auto"},
 	}
 }
+
+// retired are settings older versions wrote that nothing uses now. They're
+// accepted so an old file still loads, and dropped the next time it's saved.
+var retired = []string{"routing", "calibration", "report", "local.effort"}
 
 // Path is the config file in dir.
 func Path(dir string) string { return filepath.Join(dir, "config.toml") }
@@ -101,8 +84,15 @@ func Load(dir string) (Config, error) {
 	if err != nil {
 		return c, err
 	}
-	if _, err := toml.Decode(string(b), &c); err != nil {
+	md, err := toml.Decode(string(b), &c)
+	if err != nil {
 		return c, err
+	}
+	// A misspelled setting would otherwise be ignored without a word.
+	for _, k := range md.Undecoded() {
+		if !isRetired(k.String()) {
+			return c, fmt.Errorf("%s: unknown setting %q", Path(dir), k.String())
+		}
 	}
 	if err := c.Speed.check(); err != nil {
 		return c, fmt.Errorf("%s: %w", Path(dir), err)
@@ -167,8 +157,15 @@ func (s Speed) check() error {
 	sort.Strings(keys)
 	for _, k := range keys {
 		task, size, hasSize := strings.Cut(k, ":")
-		if !contains(Tasks(), task) || (hasSize && !contains(skills.SizeOrder, size)) {
-			return fmt.Errorf("[speed.by_task] %q: use a task (%s), optionally with :small, :medium or :large", k, strings.Join(Tasks(), ", "))
+		if !contains(Tasks(), task) {
+			return fmt.Errorf("[speed.by_task] %q: use a task (%s), optionally with a size", k, strings.Join(Tasks(), ", "))
+		}
+		// Skill checks come in three sizes; replays are small or large.
+		if sizes := skills.SizeOrder; hasSize && contains(skills.Order, task) && !contains(sizes, size) {
+			return fmt.Errorf("[speed.by_task] %q: skill checks are small, medium or large", k)
+		}
+		if hasSize && !contains(skills.Order, task) && !contains(jobtype.Tiers, size) {
+			return fmt.Errorf("[speed.by_task] %q: replays are small or large", k)
 		}
 		switch v := s.ByTask[k].(type) {
 		case int64, float64:
@@ -216,6 +213,15 @@ func (p Pick) PinnedFor(skill, size string) string {
 		return m
 	}
 	return p.ByTask[skill]
+}
+
+func isRetired(key string) bool {
+	for _, r := range retired {
+		if key == r || strings.HasPrefix(key, r+".") {
+			return true
+		}
+	}
+	return false
 }
 
 func contains(list []string, s string) bool {
