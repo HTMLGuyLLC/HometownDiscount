@@ -3,7 +3,7 @@ VERSION ?= $(patsubst v%,%,$(shell git describe --tags --always --dirty 2>/dev/n
 LDFLAGS := -s -w -X main.version=$(VERSION)
 PLATFORMS := darwin/arm64 darwin/amd64 linux/arm64 linux/amd64
 
-.PHONY: build test lint install dist clean
+.PHONY: help build test lint install dist clean
 
 build: ## Build ./bin/htd
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/htd ./cmd/htd
@@ -33,5 +33,8 @@ dist: ## Build release archives for every platform into dist/
 	done
 	cd dist && shasum -a 256 *.tar.gz > SHA256SUMS
 
-clean:
+clean: ## Delete build output
 	rm -rf bin dist
+
+help: ## List the targets
+	@grep -E '^[a-z]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-8s %s\n", $$1, $$2}'

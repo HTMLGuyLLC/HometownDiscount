@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"flag"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -204,7 +203,7 @@ func TestWithConfigQuantAndRemoteAllowed(t *testing.T) {
 	if got := withConfigQuant(rung, cfg).Quant; got != "Q4_K_M" {
 		t.Errorf("withConfigQuant = %q, want the configured Q4_K_M", got)
 	}
-	if ms := localModels(flags(t), cfg, "", "", false); len(ms) != 1 || !ms[0].AllowRemote {
+	if ms := localModels(cfg, "", "", false); len(ms) != 1 || !ms[0].AllowRemote {
 		t.Errorf("allow_remote = true should be honored: %+v", ms)
 	}
 	other := rung
@@ -285,27 +284,13 @@ func TestBenchWhenThinkingCannotBeTurnedOff(t *testing.T) {
 	}
 }
 
-// flags is bench's --url and --model, set as given ("url", "http://...").
-func flags(t *testing.T, set ...string) *flag.FlagSet {
-	t.Helper()
-	fs := flag.NewFlagSet("t", flag.ContinueOnError)
-	fs.String("url", "", "")
-	fs.String("model", "", "")
-	var args []string
-	for i := 0; i+1 < len(set); i += 2 {
-		args = append(args, "--"+set[i], set[i+1])
-	}
-	if err := fs.Parse(args); err != nil {
-		t.Fatal(err)
-	}
-	return fs
-}
-
-// Bench and replay run every configured model in order, unless one is named.
+// Bench and replay run every configured model in order, or only the ones
+// --url and --model name.
 func TestLocalModels(t *testing.T) {
 	cfg := config.Config{Local: []config.Local{
 		{URL: "http://127.0.0.1:1234", Model: "small"},
 		{URL: "http://127.0.0.1:8001", Model: "big", AllowRemote: true},
+		{URL: "http://127.0.0.1:1234", Model: "tiny"},
 	}}
 	names := func(ms []config.Local) string {
 		var out []string
@@ -314,16 +299,24 @@ func TestLocalModels(t *testing.T) {
 		}
 		return strings.Join(out, ", ")
 	}
-	if got := names(localModels(flags(t), cfg, "http://127.0.0.1:1234", "small", false)); got != "small@http://127.0.0.1:1234, big@http://127.0.0.1:8001" {
-		t.Errorf("none named: %s", got)
+	for _, c := range []struct{ url, model, want string }{
+		{"", "", "small@http://127.0.0.1:1234, big@http://127.0.0.1:8001, tiny@http://127.0.0.1:1234"},
+		{"", "big", "big@http://127.0.0.1:8001"},                                                 // its own server
+		{"http://127.0.0.1:1234", "", "small@http://127.0.0.1:1234, tiny@http://127.0.0.1:1234"}, // every model there
+		{"http://10.0.0.5:8000", "big", "big@http://10.0.0.5:8000"},                              // not set up there
+		{"", "other", "other@http://127.0.0.1:1234"},                                             // not set up: the first server
+	} {
+		if got := names(localModels(cfg, c.url, c.model, false)); got != c.want {
+			t.Errorf("--url %q --model %q: %s, want %s", c.url, c.model, got, c.want)
+		}
 	}
-	if got := localModels(flags(t, "model", "big"), cfg, "http://127.0.0.1:1234", "big", false); names(got) != "big@http://127.0.0.1:8001" || !got[0].AllowRemote {
-		t.Errorf("--model alone uses that model's own server and settings: %+v", got)
+	if got := localModels(cfg, "", "big", false); !got[0].AllowRemote {
+		t.Error("a configured model keeps its allow_remote")
 	}
-	if got := localModels(flags(t, "url", "http://10.0.0.5:8000", "model", "big"), cfg, "http://10.0.0.5:8000", "big", false); names(got) != "big@http://10.0.0.5:8000" || got[0].AllowRemote {
-		t.Errorf("another server needs its own --allow-remote: %+v", got)
+	if got := localModels(cfg, "http://10.0.0.5:8000", "big", false); got[0].AllowRemote {
+		t.Error("a server that isn't set up needs its own --allow-remote")
 	}
-	if got := names(localModels(flags(t), config.Config{}, "http://127.0.0.1:8000", "", false)); got != "@http://127.0.0.1:8000" {
+	if got := names(localModels(config.Config{}, "", "", false)); got != "@"+defaultURL {
 		t.Errorf("nothing set up: %s", got)
 	}
 }

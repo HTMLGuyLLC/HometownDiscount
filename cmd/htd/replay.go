@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -46,21 +45,16 @@ const (
 // runReplay replays past jobs on a local model and grades each one against
 // what Claude produced. Results go to ~/.htd/runs.jsonl; `htd card` reads them.
 func runReplay(args []string, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("replay", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := command("replay", "[--max N] [--types LIST] [--days N] [--model NAME]", "Replays your past subagent jobs on each local model in config.toml and grades\neach against what Claude produced. Slow: run it overnight. Jobs already done\nare skipped.", stderr)
 	dir := store.DefaultDir()
 	cfg, err := config.Load(dir)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", config.Path(dir), err)
 	}
-	defURL, defModel := "http://127.0.0.1:8000", ""
-	if len(cfg.Local) > 0 {
-		defURL, defModel = cfg.Local[0].URL, cfg.Local[0].Model
-	}
-	url := fs.String("url", defURL, "local model server URL")
-	model := fs.String("model", defModel, "model to replay on (default: the first one served)")
+	url := fs.String("url", "", "run only the model at this server URL (default: every model in config.toml)")
+	model := fs.String("model", "", "run only this model (default: every model in config.toml)")
 	days := fs.Int("days", 30, "how many days of history to replay from")
-	max := fs.Int("max", 40, "stop after this many replays (for each model)")
+	max := fs.Int("max", 40, "stop after this many replays per model")
 	types := fs.String("types", "", "comma-separated job types (default: all gradable)")
 	root := fs.String("projects", history.DefaultRoot(), "Claude Code transcripts folder")
 	allowRemote := fs.Bool("allow-remote", false, "allow a model server that isn't on this machine or local network (your code goes there)")
@@ -78,7 +72,7 @@ func runReplay(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	rp := &replayRun{dir: dir, cfg: cfg, st: st, root: *root, days: *days, types: *types, max: *max, out: stdout}
-	models := localModels(fs, cfg, *url, *model, *allowRemote)
+	models := localModels(cfg, *url, *model, *allowRemote)
 	replayed := 0
 	var failed error
 	for _, m := range models {

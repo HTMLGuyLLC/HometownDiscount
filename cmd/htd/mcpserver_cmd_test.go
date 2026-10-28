@@ -451,7 +451,7 @@ func TestMCPHelp(t *testing.T) {
 	hermetic(t)
 	var out strings.Builder
 	err := runMCP([]string{"--help"}, strings.NewReader(""), &out, &out)
-	if err == nil || !strings.Contains(out.String(), "claude mcp add htd -- htd mcp") {
+	if err == nil || !strings.Contains(out.String(), "claude mcp add --scope user htd -- htd mcp") {
 		t.Errorf("err = %v, output %q", err, out.String())
 	}
 }

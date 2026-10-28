@@ -171,7 +171,7 @@ func tierOrder(t string) int {
 // what it has proven but is too slow for, what it hasn't proven yet and what
 // it isn't good enough for.
 func Headline(w io.Writer, rows []Row) {
-	fmt.Fprintln(w, "Hometown Discount · what your local model has earned")
+	fmt.Fprintln(w, "Hometown Discount · what your local models have earned")
 	fmt.Fprintln(w)
 	if len(rows) == 0 {
 		fmt.Fprintln(w, "Nothing tested yet. Run `htd bench` in a repo (minutes), then `htd replay` (overnight).")

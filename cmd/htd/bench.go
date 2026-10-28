@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -32,22 +31,17 @@ var skillOrder = schedule.Order{Types: skills.Order, Tiers: skills.SizeOrder}
 // easiest skill and smallest input first, one at a time, stopping each size
 // as soon as it clearly can't reach the bar.
 func runBench(args []string, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("bench", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := command("bench", "[--repo DIR] [--max N] [--model NAME]", "Skill checks built from a repo's code, on each local model in config.toml.\nEasiest skills and smallest files first; a size stops early when it clearly\ncan't pass. Checks already done are skipped.", stderr)
 	dir := store.DefaultDir()
 	cfg, err := config.Load(dir)
 	if err != nil {
 		return err
 	}
-	defURL, defModel := "http://127.0.0.1:8000", ""
-	if len(cfg.Local) > 0 {
-		defURL, defModel = cfg.Local[0].URL, cfg.Local[0].Model
-	}
 	wd, _ := os.Getwd()
-	url := fs.String("url", defURL, "local model server URL")
-	model := fs.String("model", defModel, "model to test (default: the first one served)")
+	url := fs.String("url", "", "run only the model at this server URL (default: every model in config.toml)")
+	model := fs.String("model", "", "run only this model (default: every model in config.toml)")
 	repo := fs.String("repo", wd, "git repo to build skill checks from")
-	max := fs.Int("max", 150, "stop after this many checks (each way, for a model that thinks)")
+	max := fs.Int("max", 150, "stop after this many checks per model (and per way, for a model that thinks)")
 	timeout := fs.Duration("timeout", 5*time.Minute, "time limit per check")
 	allowRemote := fs.Bool("allow-remote", false, "allow a model server that isn't on this machine or local network (your code goes there)")
 	if err := fs.Parse(args); err != nil {
@@ -64,7 +58,7 @@ func runBench(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	models := localModels(fs, cfg, *url, *model, *allowRemote)
+	models := localModels(cfg, *url, *model, *allowRemote)
 	var tasks []skills.Task
 	generated, benched := false, 0
 	var failed error
@@ -421,27 +415,32 @@ func withConfigQuant(r store.Rung, cfg config.Config) store.Rung {
 	return r
 }
 
-// localModels are the models bench and replay run on: the one named with
-// --url or --model, or else every model in config.toml in the order listed
-// (with none set up, the first model the default server offers).
-func localModels(fs *flag.FlagSet, cfg config.Config, url, model string, allowRemote bool) []config.Local {
-	set := map[string]bool{}
-	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
-	if set["url"] || set["model"] || len(cfg.Local) == 0 {
-		l := config.Local{URL: url, Model: model, AllowRemote: allowRemote}
-		for _, c := range cfg.Local {
-			if c.Model == model && (c.URL == url || !set["url"]) { // --model alone: that model's own server
-				l.URL, l.AllowRemote = c.URL, l.AllowRemote || c.AllowRemote
-				break
-			}
+// defaultURL is where htd looks for a model server when none is set up.
+const defaultURL = "http://127.0.0.1:8000"
+
+// localModels are the models bench and replay run on: every model in
+// config.toml in the order listed, or only those --url and --model name. A
+// named model that isn't set up is tried on the named server, else the first
+// configured one (with none set up, the first model the default server
+// offers).
+func localModels(cfg config.Config, url, model string, allowRemote bool) []config.Local {
+	var out []config.Local
+	for _, c := range cfg.Local {
+		if (url == "" || c.URL == url) && (model == "" || c.Model == model) {
+			c.AllowRemote = c.AllowRemote || allowRemote
+			out = append(out, c)
 		}
-		return []config.Local{l}
 	}
-	out := append([]config.Local(nil), cfg.Local...)
-	for i := range out {
-		out[i].AllowRemote = out[i].AllowRemote || allowRemote
+	if len(out) > 0 {
+		return out
 	}
-	return out
+	if url == "" {
+		url = defaultURL
+		if len(cfg.Local) > 0 {
+			url = cfg.Local[0].URL
+		}
+	}
+	return []config.Local{{URL: url, Model: model, AllowRemote: allowRemote}}
 }
 
 // probeRung finds the server and model and returns the setup identity

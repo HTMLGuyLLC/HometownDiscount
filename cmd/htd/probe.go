@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io"
 
@@ -12,9 +11,8 @@ import (
 // runProbe checks a local model server: what it serves, its real context and
 // quant, how fast it decodes, and whether its tool calls are well formed.
 func runProbe(args []string, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("probe", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	url := fs.String("url", "http://127.0.0.1:8000", "local model server URL")
+	fs := command("probe", "[--url URL]", "Checks a model server: its models, context, quantization, speed and tool calls.", stderr)
+	url := fs.String("url", defaultURL, "local model server URL")
 	model := fs.String("model", "", "model to test (default: the first one served)")
 	calls := fs.Int("tool-calls", 20, "tool calls to test (19 of 20 must be valid)")
 	if err := fs.Parse(args); err != nil {

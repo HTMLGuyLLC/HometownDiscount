@@ -23,6 +23,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      - name: Lint
+        run: make lint
       - name: Build archives
         run: make dist VERSION="${GITHUB_REF_NAME#v}"
       - name: Record build provenance

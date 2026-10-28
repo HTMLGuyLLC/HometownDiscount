@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -87,11 +86,7 @@ func runSnapshot(stdin io.Reader) error {
 
 // runHooks turns snapshots on or off: htd's hook in Claude Code's settings.
 func runHooks(args []string, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("hooks", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		fmt.Fprintf(stderr, "Usage: htd hooks [on|off]\n\nSnapshots: when on, htd saves your repo's uncommitted files (text only, no\nsecrets, kept %d days in ~/.htd) each time Claude starts a subagent, so a\nreplay sees what the job saw. They're set as a hook in %s.\n", int(snapshot.MaxAge.Hours()/24), claudesettings.Path())
-	}
+	fs := command("hooks", "[on|off]", fmt.Sprintf("Snapshots: when on, htd saves your repo's uncommitted files (text only, no\nsecrets, kept %d days in ~/.htd) each time Claude starts a subagent, so a\nreplay sees what the job saw. They're set as a hook in %s.", int(snapshot.MaxAge.Hours()/24), claudesettings.Path()), stderr)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -131,6 +126,5 @@ func runHooks(args []string, stdout, stderr io.Writer) error {
 		}
 		return nil
 	}
-	fs.Usage()
-	return flag.ErrHelp
+	return fmt.Errorf("hooks takes on or off, not %q", fs.Arg(0))
 }

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -21,13 +20,9 @@ import (
 )
 
 // runMCP serves ask_local over stdio for Claude Code, Codex or any MCP
-// client: claude mcp add htd -- htd mcp
+// client: claude mcp add --scope user htd -- htd mcp
 func runMCP(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: htd mcp\n\nMCP server (stdio) with the ask_local tool. Add it to Claude Code with:\n  claude mcp add htd -- htd mcp")
-	}
+	fs := command("mcp", "", "MCP server (stdio) with the ask_local tool. Add it to Claude Code, for every\nproject, with:\n  claude mcp add --scope user htd -- htd mcp", stderr)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -18,8 +17,7 @@ import (
 // and snapshots, and with --all the config and htd's Claude Code hook too.
 // It asks first unless --yes is given.
 func runForget(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("forget", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := command("forget", "[--all] [--yes]", "Deletes what htd stored in ~/.htd, after asking.", stderr)
 	all := fs.Bool("all", false, "also delete your settings (config.toml) and htd's Claude Code hook")
 	yes := fs.Bool("yes", false, "don't ask for confirmation")
 	if err := fs.Parse(args); err != nil {

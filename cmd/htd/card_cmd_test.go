@@ -69,7 +69,7 @@ func TestCardProvenReplays(t *testing.T) {
 	out := cardOut(t)
 
 	for _, want := range []string{
-		"Hometown Discount · what your local model has earned",
+		"Hometown Discount · what your local models have earned",
 		"tiny-q4 · q4 · builtin", // the setup, in words
 		"Can take now:",
 		"find jobs vs Opus 5.5 (small)",

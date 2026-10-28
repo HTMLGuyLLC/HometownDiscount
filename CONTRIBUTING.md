@@ -10,7 +10,7 @@ You'll be asked to accept a short contributor license agreement ([CLA.md](CLA.md
 
 1. Open an issue first for anything bigger than a small fix, so we can agree on the approach.
 2. Match the style of the surrounding code: small functions, short doc comments, plain names.
-3. Add tests for new behavior and run `gofmt -l . && go vet ./... && go test ./...` before you open the pull request.
+3. Add tests for new behavior and run `make lint test` before you open the pull request. On Linux, install bubblewrap first (`sudo apt install bubblewrap`): the sandbox tests need it.
 4. Never add anything that sends a user's data off their machine, calls a paid API by default, or weakens the sandbox.
 
 ## Good first contributions

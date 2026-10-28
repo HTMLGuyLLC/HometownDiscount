@@ -1,30 +1,30 @@
 # Hometown Discount
 
-**Find out which of your Claude Code work a local model can actually do, proven on your own jobs and your own code.**
+**Find out how much of your Claude Code work your local models can actually do, proven on your own jobs and your own code.**
 
 *Stop paying out-of-state fees for work your hometown can handle.* Your local models get the hometown rate; Claude is the out-of-state trip.
 
-> 🚧 **v0.1, an early preview.** It works end to end on macOS and Linux (see [Install](#install-and-set-up)). Expect rough edges.
+> 🚧 **v0.2, an early preview.** It works end to end on macOS and Linux (see [Install](#install-and-set-up)). Expect rough edges.
 
-Free and source-available ([license](#license)) · `htd` on the command line · $0 extra by default · nothing leaves your machine.
+Free and source-available ([license](#license)) · `htd` on the command line · $0 extra by default · your code goes only to the model servers you set up.
 
 ## What it does
 
 - **`htd map`** shows where your Claude Code subagent spend goes, and what it would cost on cheaper models.
-- **`htd bench`** checks your local model on exact tasks built from your own repo (find where something is defined, find the lines that mention a word, list what a file declares, read a JSON value, find which files mention something), at growing file sizes.
-- **`htd replay`** has your local model redo past jobs Claude already finished, on the same code, and grades each answer against Claude's.
-- **`htd card`** shows what the model has earned: what it can take now, what it's accurate at but too slow for, what it hasn't proven yet, and what it isn't good enough for.
-- **`htd mcp`** gives Claude an `ask_local` tool, so Claude can hand your local model the small work it has proven, and nothing else.
+- **`htd bench`** checks your local models on exact tasks built from your own repo (find where something is defined, find the lines that mention a word, list what a file declares, read a JSON value, find which files mention something), at growing file sizes.
+- **`htd replay`** has your local models redo past jobs Claude already finished, on the same code, and grades each answer against Claude's.
+- **`htd card`** shows what each model has earned: what it can take now, what it's accurate at but too slow for, what it hasn't proven yet, and what it isn't good enough for.
+- **`htd mcp`** gives Claude an `ask_local` tool, so Claude can hand your local models the small work each has proven, and nothing else.
 
-Work goes local only when the model is **accurate and fast enough**: by default, at most 20% slower than Claude on the same kind and size of task. You can change that per task and size.
+Work goes local only when a model is **accurate and fast enough**: by default, at most 20% slower than Claude on the same kind and size of task. You can change that per task and size.
 
-Grading is mechanical (no AI judges another AI), so the same answer always gets the same grade. Everything runs on your machine and costs $0.
+Grading is mechanical (no AI judges another AI), so the same answer always gets the same grade. Everything runs on your own hardware and costs $0.
 
 ## Works with your Claude subscription
 
-- **No API key needed, and no Claude calls.** Replays and skill checks run only on your local model. Claude's past answers are read from files already on your disk.
+- **No API key needed, and no Claude calls.** Replays and skill checks run only on your local models. Claude's past answers are read from files already on your disk.
 - **Your Claude login is never touched** and `ANTHROPIC_API_KEY` is never set.
-- **`ask_local` saves context:** when Claude hands a proven task to the local model, the file contents never enter Claude's window.
+- **`ask_local` saves context:** when Claude hands a proven task to a local model, the file contents never enter Claude's window.
 
 ## Install and set up
 
@@ -48,16 +48,16 @@ Then:
 
 | Step | Command | Takes |
 | --- | --- | --- |
-| 1. Setup wizard: spend map, then your local model (URL + model name, any OpenAI-compatible server) | `htd setup` | 1 minute |
+| 1. Setup wizard: spend map, your local models (URL + model name, any OpenAI-compatible server), then snapshots | `htd setup` | 1 minute |
 | 2. Where your subagent spend goes | `htd map` | seconds |
 | 3. Skill checks on your code (run inside a repo) | `htd bench` | minutes; a few hours for a big repo |
 | 4. Replays of your real past jobs | `htd replay` | minutes per job; run it overnight |
-| 5. What the model has earned | `htd card` | instant |
-| 6. Let Claude hand it proven work | `claude mcp add htd -- htd mcp` | once |
+| 5. What each model has earned | `htd card` | instant |
+| 6. Let Claude hand them proven work, in every project | `claude mcp add --scope user htd -- htd mcp` | once |
 
 **Local servers that work:** MTPLX, Splish/Splash, Ollama, LM Studio, llama.cpp, vLLM, or anything serving `/v1/chat/completions`. The wizard checks the real context window (it warns about Ollama's 4K default), speed and tool-call reliability. A server that isn't on your machine or local network is refused unless you say yes, because your code would go there.
 
-**Platforms:** macOS (Apple Silicon or Intel) and Linux. Replays need a sandbox: built into macOS; on Linux install bubblewrap (`sudo apt install bubblewrap`). On Windows, `htd map` works; replays don't yet.
+**Platforms:** macOS (Apple Silicon or Intel) and Linux. Replays need a sandbox: built into macOS; on Linux install bubblewrap (`sudo apt install bubblewrap`). Windows has no download; built from source, only `htd map` works there.
 
 ## Configuration
 
@@ -86,7 +86,7 @@ prefer = "fastest"           # or "listed": the first model in your list that ha
 
 Skills: `json`, `lookup`, `lines`, `list`, `files`. A pinned model must be one in your `[[local]]` list. All models share one lock, so only one runs at a time: their timings stay fair, and two models never fill your memory at once.
 
-**Speed limits.** A task the model has proven goes local only if it's at most `max_slower` percent slower than Claude. Set a different limit for a task, or a task at one size; the most specific setting wins:
+**Speed limits.** A task a model has proven goes local only if it's at most `max_slower` percent slower than Claude. Set a different limit for a task, or a task at one size; the most specific setting wins:
 
 ```toml
 [speed]
@@ -100,7 +100,7 @@ claude_model = "auto"        # compare with the Claude model you used most in th
 "json" = "always"            # skip the speed check (it still has to be proven accurate)
 ```
 
-Tasks: `json`, `lookup`, `lines`, `list`, `files` (skill checks) and `find`, `extract`, `classify`, `transform`, `review`, `research` (replays). Sizes: `small` (up to 200 lines), `medium` (up to 1,000), `large` (up to 4,000). A typo stops htd with a message instead of being ignored. `ask_local` picks up changes on its next call.
+Tasks: `json`, `lookup`, `lines`, `list`, `files` (skill checks) and `find`, `extract`, `classify`, `transform`, `review`, `research` (replays). Skill checks come in three sizes: `small` (up to 200 lines), `medium` (up to 1,000), `large` (up to 4,000). Replays are `small` or `large`, by tool calls compared with your usual for that type of job. A misspelled setting, task or size stops htd with a message instead of being ignored. `ask_local` picks up changes on its next call.
 
 Claude's side of the comparison costs nothing: for skill checks, htd times how long that Claude model took to answer after reading a file that size in your own transcripts (re-measured weekly, and whenever you switch models); for replays, it uses how long the original job took. Until there are at least 5 timings on both sides, accuracy alone decides.
 
@@ -124,7 +124,7 @@ Claude's side of the comparison costs nothing: for skill checks, htd times how l
 
 `bench` and `replay` also take `--url`, `--model` and `--allow-remote` to run one model instead of every configured one (`--max` applies to each model). Every command takes `--help`.
 
-**What's stored, all in `~/.htd`:** `config.toml`, `runs.jsonl` (one line per graded replay or check), `answers/` (each answer next to the expected one, for review by hand), `delegations.jsonl` (each `ask_local` call: skill, size, outcome; no file contents), `cache/` (Claude's typical times: medians only, no transcript content), `snapshots/` (uncommitted files saved as subagents start, when snapshots are on; kept 60 days). See [PRIVACY.md](PRIVACY.md).
+**What's stored, all in `~/.htd`:** `config.toml`, `runs.jsonl` (one line per graded replay or check), `answers/` (each answer next to the expected one, for review by hand), `delegations.jsonl` (each `ask_local` call: skill, size, outcome; no file contents), `cache/` (Claude's typical times, medians only; which models think before answering; temporary repo copies during replays), `snapshots/` (uncommitted files saved as subagents start, when snapshots are on; kept 60 days), and an empty `model.lock` that lets htd commands take turns. See [PRIVACY.md](PRIVACY.md).
 
 ## Reading the card
 
@@ -146,7 +146,7 @@ Skill checks have exact answers and a fixed bar of 85%. Replay results are a fir
 - **Slow local models.** Each replay has a 20-minute limit and each skill check 5 minutes; a timeout counts as a fail. `htd replay` and `htd bench` keep your Mac awake while they run.
 - **Server problems aren't counted against the model.** A crash or restart is waited out and that job is skipped.
 - **Low memory pauses a run.** Before each job or check, `htd replay` and `htd bench` check your machine's memory; when it's low they wait up to 10 minutes for it to recover, then stop (finished work is kept). A local model server that grows with use is the usual cause: restart it or lower its memory limit.
-- **Two htd commands at once** take turns on the local model, one request at a time. An `ask_local` call from Claude goes first; if the model stays busy, Claude is told so and does the task itself.
+- **Two htd commands at once** take turns on your local models, one request at a time. An `ask_local` call from Claude goes first; if the model stays busy, Claude is told so and does the task itself.
 - **Cloud models served through a local URL** (e.g. Ollama `:cloud`) are refused: they aren't local.
 
 ## Links

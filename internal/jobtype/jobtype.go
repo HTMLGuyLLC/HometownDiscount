@@ -18,7 +18,7 @@ const (
 	Research  = "research" // web research, replayed on the pages the original job fetched
 )
 
-// Types that are shown on the map but not graded in v1.
+// Types that are shown on the map but not graded.
 const (
 	Explore = "explore"
 	Browser = "browser" // driving a browser: stateful, not replayable
@@ -31,7 +31,7 @@ const (
 // Order is the display order on the map.
 var Order = []string{Find, Extract, Classify, Transform, Review, Research, Explore, Browser, Plan, Tests, Edit, Other}
 
-// Gradable reports whether a type has a mechanical grading rule in v1.
+// Gradable reports whether a type has a mechanical grading rule.
 func Gradable(t string) bool {
 	switch t {
 	case Find, Extract, Classify, Transform, Review, Research:

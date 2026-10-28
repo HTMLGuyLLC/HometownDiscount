@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -20,8 +19,7 @@ import (
 // runGold reports how many replayable jobs have what a replay needs. It
 // prints counts only, never prompts or answers.
 func runGold(args []string, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("gold", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := command("gold", "[--days N] [--fidelity N]", "How many of your past jobs can be replayed, and why the rest can't.", stderr)
 	days := fs.Int("days", 30, "how many days of history to include")
 	root := fs.String("projects", history.DefaultRoot(), "Claude Code transcripts folder")
 	sample := fs.Int("fidelity", 0, "rebuild the workspace for up to N repo jobs per type and report fidelity")

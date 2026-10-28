@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -26,8 +25,7 @@ import (
 // verdicts. With --apply it saves the new grades, so evidence gathered under
 // older rules counts by the current ones.
 func runRegrade(args []string, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("regrade", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := command("regrade", "[--apply]", "Grades saved replay answers again with this version's rules, without running\nthe model. --apply saves the new grades.", stderr)
 	root := fs.String("projects", history.DefaultRoot(), "Claude Code transcripts folder")
 	apply := fs.Bool("apply", false, "save the new grades (the card then uses them)")
 	if err := fs.Parse(args); err != nil {

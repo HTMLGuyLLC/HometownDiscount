@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"strconv"
@@ -23,11 +22,7 @@ import (
 // snapshots for replays.
 // Every step can be skipped with Enter, and nothing changes until the end.
 func runSetup(args []string, stdin io.Reader, stdout io.Writer) error {
-	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
-	fs.SetOutput(stdout)
-	fs.Usage = func() {
-		fmt.Fprintln(stdout, "Usage: htd setup\n\nFirst-run wizard: your spend map, then your local model. Your answers are saved\nto ~/.htd/config.toml.")
-	}
+	fs := command("setup", "", "First-run wizard: your spend map, your local models, then snapshots. Your\nanswers are saved to ~/.htd/config.toml.", stdout)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -66,7 +61,7 @@ func runSetup(args []string, stdin io.Reader, stdout io.Writer) error {
 
 	// 2/3: the hometown models. The first answer is the main one; more can
 	// be added, e.g. a small fast model next to a big one.
-	def := "http://127.0.0.1:8000"
+	def := defaultURL
 	if len(cfg.Local) > 0 {
 		def = cfg.Local[0].URL
 	}
@@ -125,8 +120,8 @@ func runSetup(args []string, stdin io.Reader, stdout io.Writer) error {
 	if len(cfg.Local) > 0 {
 		fmt.Fprintln(stdout, "Next, from inside one of your repos:")
 		fmt.Fprintln(stdout, "  htd bench    skill checks on your code (minutes; a few hours for a big repo)")
-		fmt.Fprintln(stdout, "  htd card     what your model has earned")
-		fmt.Fprintln(stdout, "  claude mcp add htd -- htd mcp    let Claude hand it proven work")
+		fmt.Fprintln(stdout, "  htd card     what your models have earned")
+		fmt.Fprintln(stdout, "  claude mcp add --scope user htd -- htd mcp    let Claude hand them proven work")
 		fmt.Fprintln(stdout, "  htd replay   replays of your real past jobs (slow: run it overnight)")
 	} else {
 		fmt.Fprintln(stdout, "Next: `htd map` shows where your subagent spend goes. Run `htd setup` again once a local model is running.")
