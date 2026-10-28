@@ -116,7 +116,7 @@ Claude's side of the comparison costs nothing: for skill checks, htd times how l
 | `htd replay [--max 40] [--types find,review] [--days 30]` | Replay past jobs on each local model; resumable (done jobs are skipped) |
 | `htd card [--details]` | What each model has earned; `--details` shows every number |
 | `htd mcp` | MCP server with the `ask_local` tool |
-| `htd probe --url URL` | Check a server: models, context, quant, speed, tool calls |
+| `htd probe [--url URL]` | Check a server (your first model's, by default): models, context, quant, speed, tool calls |
 | `htd gold [--fidelity N]` | How many past jobs can be replayed |
 | `htd regrade [--apply]` | Re-grade saved answers after an update, without re-running the model; `--apply` saves the new grades |
 | `htd hooks [on\|off]` | Snapshots: save your repo's uncommitted files each time Claude starts a subagent, so replays see what each job saw (a Claude Code hook) |

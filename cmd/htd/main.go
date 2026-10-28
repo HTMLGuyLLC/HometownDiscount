@@ -36,7 +36,7 @@ Usage:
   htd forget [--all]                 Delete what htd stored in ~/.htd (--all also deletes your settings)
   htd version                        Print the version
 
-Advanced: htd probe --url URL (check a server), htd gold (how many past jobs can be replayed),
+Advanced: htd probe [--url URL] (check a server, yours by default), htd gold (how many past jobs can be replayed),
           htd regrade (re-grade saved answers). Every command takes --help.
 `
 

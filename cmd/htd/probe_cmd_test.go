@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/config"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/servers"
 )
 
@@ -56,6 +57,29 @@ func TestProbeModelFlag(t *testing.T) {
 
 	if _, err := probe("--url", srv.URL, "--model", "nope"); err == nil || !strings.Contains(err.Error(), `doesn't serve "nope"`) {
 		t.Errorf("an unknown model should fail clearly, got %v", err)
+	}
+}
+
+// With no --url, probe checks your first model in config.toml, on its own
+// server: not port 8000, and not whichever model the server lists first.
+func TestProbeUsesTheConfiguredModel(t *testing.T) {
+	home, _ := hermetic(t)
+	srv := newFakeServer(t, modelList("alpha-4bit", "beta-8bit"), healthyModel)
+	cfg := config.Default()
+	cfg.Local = []config.Local{{URL: srv.URL, Model: "beta-8bit"}}
+	if err := config.Save(home, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := probe("--tool-calls", "1")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if !strings.Contains(out, "Server: "+srv.URL) || !strings.Contains(out, "Testing beta-8bit...") {
+		t.Errorf("want the configured server and model:\n%s", out)
+	}
+	if out, err := probe("--url", srv.URL, "--model", "alpha-4bit", "--tool-calls", "1"); err != nil || !strings.Contains(out, "Testing alpha-4bit...") {
+		t.Errorf("flags still choose: %v\n%s", err, out)
 	}
 }
 

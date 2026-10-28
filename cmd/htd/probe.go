@@ -5,20 +5,29 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/config"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/servers"
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/store"
 )
 
 // runProbe checks a local model server: what it serves, its real context and
 // quant, how fast it decodes, and whether its tool calls are well formed.
 func runProbe(args []string, stdout, stderr io.Writer) error {
-	fs := command("probe", "[--url URL]", "Checks a model server: its models, context, quantization, speed and tool calls.", stderr)
-	url := fs.String("url", defaultURL, "local model server URL")
-	model := fs.String("model", "", "model to test (default: the first one served)")
+	fs := command("probe", "[--url URL] [--model NAME]", "Checks a model server: its models, context, quantization, speed and tool calls.", stderr)
+	url := fs.String("url", "", "server URL (default: your first model's, from config.toml; else "+defaultURL+")")
+	model := fs.String("model", "", "model to test (default: your model on that server, else the first one it serves)")
 	calls := fs.Int("tool-calls", 20, "tool calls to test (19 of 20 must be valid)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	ctx := context.Background()
+	cfg, err := config.Load(store.DefaultDir())
+	if err != nil {
+		return err
+	}
+	// The same choice bench and replay make, minus running them all.
+	target := localModels(cfg, *url, *model, false)[0]
+	*url, *model = target.URL, target.Model
 
 	if servers.IsRemote(*url) {
 		fmt.Fprintln(stdout, "Warning: this server isn't on your machine or local network. Replays would send your code to it.")
