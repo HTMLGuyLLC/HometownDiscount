@@ -15,7 +15,7 @@
       <div class="brand"><img class="logo" src="favicon.svg" alt="">Hometown Discount</div>
       <h1>What your local models have earned</h1>
     </div>
-    <div class="live" id="live" aria-live="polite">Loading…</div>
+    <div class="live" id="live">Loading…</div>
   </header>
 
   <nav class="tabs" role="tablist" aria-label="Sections">
@@ -24,13 +24,14 @@
     <button role="tab" id="tab-settings" aria-controls="panel-settings" data-tab="settings">Settings</button>
   </nav>
 
-  <div id="error" class="error" hidden></div>
+  <div id="error" class="error" role="alert" hidden></div>
 
   <!-- Savings: what went local, and what it's likely to be worth -->
-  <section id="panel-savings" role="tabpanel" aria-labelledby="tab-savings" hidden>
-    <p class="lede">What <code>ask_local</code> handed to your local models instead of Claude, what that saved, and what it's likely to save from here.</p>
+  <section id="panel-savings" role="tabpanel" tabindex="0" aria-labelledby="tab-savings" hidden>
+    <p class="lede">Work Claude handed to your local models instead of doing itself, what that kept out of Claude, and what it's likely to keep from here. Claude hands work over with the <code>ask_local</code> tool.</p>
+    <div class="notice warn config-error" hidden><span class="msg"></span> <button class="link" type="button" data-goto="settings">Open Settings</button></div>
     <div id="tracking-off" class="notice" hidden>
-      <b>Handoff tracking is off.</b> htd isn't logging <code>ask_local</code> calls, so nothing new shows here. <button class="link" type="button" data-goto="settings">Turn it on in Settings</button>
+      <b>Handoff tracking is off.</b> htd isn't logging handoffs, so nothing new shows here. <button class="link" type="button" data-goto="settings">Turn it on in Settings</button>
     </div>
     <div id="savings-empty" class="panel empty" hidden>
       <h2>No handoffs yet</h2>
@@ -56,7 +57,8 @@
   </section>
 
   <!-- Models: how each local model is doing -->
-  <section id="panel-models" role="tabpanel" aria-labelledby="tab-models" hidden>
+  <section id="panel-models" role="tabpanel" tabindex="0" aria-labelledby="tab-models" hidden>
+    <div class="notice warn config-error" hidden><span class="msg"></span> <button class="link" type="button" data-goto="settings">Open Settings</button></div>
     <p class="lede">Your local models redo work Claude already did, are graded against the right answer, and are timed against Claude. Work goes local only when a model is accurate and fast enough.</p>
     <div id="empty" class="panel empty" hidden>
       <h2>Nothing tested yet</h2>
@@ -88,7 +90,7 @@
   </section>
 
   <!-- Settings: a form that writes config.toml -->
-  <section id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
+  <section id="panel-settings" role="tabpanel" tabindex="0" aria-labelledby="tab-settings" hidden>
     <p class="lede">These settings are saved to <code id="config-path">~/.htd/config.toml</code>. htd commands and <code>ask_local</code> pick up changes on their next run or call.</p>
     <div id="settings-problem" class="notice warn" hidden></div>
     <form id="settings" novalidate autocomplete="off"></form>
@@ -98,6 +100,7 @@
     </details>
     <div class="savebar" id="savebar">
       <span id="save-status" class="save-status" aria-live="polite"></span>
+      <button type="button" id="reload" class="btn" hidden>Reload settings</button>
       <button type="button" id="revert" class="btn">Undo changes</button>
       <button type="button" id="save" class="btn primary">Save settings</button>
     </div>

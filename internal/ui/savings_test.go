@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -22,17 +23,21 @@ func TestSavings(t *testing.T) {
 		handoff(now.AddDate(0, 0, -10), "acme/Big", "lookup", 1000),
 		handoff(now.AddDate(0, 0, -5), "acme/Small", "json", 500),
 		handoff(now.AddDate(0, 0, -1), "", "json", 500), // logged before models were
-		{At: now.AddDate(0, 0, -1), Skill: "files", Outcome: "refused"},
+		{At: now.AddDate(0, 0, -1), Skill: "files", Outcome: "refused", Reason: "slow"},
+		{At: now.AddDate(0, 0, -1), Skill: "files", Outcome: "refused"}, // logged before reasons were
 		{At: now.AddDate(0, 0, -1), Skill: "files", Outcome: "error"},
 	}
 	s := Build(Input{Delegations: ds, Claude: claude2, Now: now, Tracking: true, ReadsReady: true}).Savings
-	if !s.Tracking || s.Answered != 4 || s.Refused != 1 || s.Failed != 1 || s.TokensKept != 3000 {
+	if !s.Tracking || s.Answered != 4 || s.Refused != 2 || s.Failed != 1 || s.TokensKept != 3000 {
 		t.Fatalf("totals: %+v", s)
+	}
+	if len(s.RefusedWhy) != 2 || s.RefusedWhy["slow"] != 1 || s.RefusedWhy["other"] != 1 {
+		t.Errorf("why refused: %v", s.RefusedWhy)
 	}
 	if len(s.ByModel) != 3 || s.ByModel[0].Name != "Big" || s.ByModel[0].Tasks != 2 || s.ByModel[0].Tokens != 2000 {
 		t.Errorf("by model: %+v", s.ByModel)
 	}
-	if s.ByModel[2].Name != "Small" && s.ByModel[1].Name != "Model not recorded" {
+	if s.ByModel[2].Name != "Small" && s.ByModel[1].Name != NotRecorded {
 		t.Errorf("by model names: %+v", s.ByModel)
 	}
 	if len(s.ByTask) != 2 || s.ByTask[0].Tasks != 2 {
@@ -79,8 +84,25 @@ func TestRoomToGrow(t *testing.T) {
 	if s := Build(in).Savings; s.RoomStatus != "reading" || s.Room != nil {
 		t.Errorf("while reading: %+v", s)
 	}
-	in.ReadsReady, in.Runs = true, []store.Run{}
+	in.ReadsReady, in.ReadsErr = true, "permission denied"
+	if s := Build(in).Savings; s.RoomStatus != "error" || !strings.Contains(s.RoomError, "permission denied") || s.Room != nil {
+		t.Errorf("a failed scan: %+v", s)
+	}
+	in.ReadsErr, in.Runs = "", []store.Run{}
 	if s := Build(in).Savings; s.RoomStatus != "none" || s.Room != nil {
 		t.Errorf("nothing goes local: %+v", s)
+	}
+}
+
+// Tokens are summed as bytes and divided once, the way `htd card` totals
+// them, so three small calls don't each lose a rounding.
+func TestSavingsTokensRoundOnce(t *testing.T) {
+	var ds []delegate.Delegation
+	for range 3 {
+		ds = append(ds, delegate.Delegation{At: now, Model: "m", Skill: "json", Size: "small", Bytes: 603, AnswerBytes: 100, Outcome: "answered"}) // 503 bytes kept
+	}
+	rep := Build(Input{Delegations: ds, Now: now, Tracking: true})
+	if want := delegate.Summarize(ds).Tokens(); rep.Savings.TokensKept != want || rep.Savings.ByModel[0].Tokens != want || want != 377 {
+		t.Errorf("tokens %d (by model %d), want %d", rep.Savings.TokensKept, rep.Savings.ByModel[0].Tokens, want)
 	}
 }

@@ -54,14 +54,62 @@ const (
 // SizeOrder is the run order within a skill.
 var SizeOrder = []string{Small, Medium, Large}
 
+// Most input lines each size takes.
+const (
+	SmallLines  = 200
+	MediumLines = 1000
+	LargeLines  = 4000
+)
+
+// SizeLines is the most input lines a size takes, 0 for a size that doesn't exist.
+func SizeLines(size string) int {
+	switch size {
+	case Small:
+		return SmallLines
+	case Medium:
+		return MediumLines
+	case Large:
+		return LargeLines
+	}
+	return 0
+}
+
+// SizeWords is a size in plain words, e.g. "up to 1,000 lines".
+func SizeWords(size string) string {
+	n := SizeLines(size)
+	if n == 0 {
+		return "any size"
+	}
+	return "up to " + Commas(n) + " lines"
+}
+
+// Commas writes a whole number with thousands separators.
+func Commas(n int) string {
+	s := fmt.Sprint(n)
+	for i := len(s) - 3; i > 0; i -= 3 {
+		s = s[:i] + "," + s[i:]
+	}
+	return s
+}
+
+// Names are the skill checks in plain words, for pages and cards that
+// aren't talking to the config file.
+var Names = map[string]string{
+	JSON:   "Read a JSON value",
+	Lookup: "Find a definition",
+	Lines:  "Find matching lines",
+	List:   "List what a file declares",
+	Files:  "Find which files mention something",
+}
+
 // SizeOf maps an input line count to a size, or "" when it's too big to use.
 func SizeOf(lines int) string {
 	switch {
-	case lines <= 200:
+	case lines <= SmallLines:
 		return Small
-	case lines <= 1000:
+	case lines <= MediumLines:
 		return Medium
-	case lines <= 4000:
+	case lines <= LargeLines:
 		return Large
 	}
 	return ""

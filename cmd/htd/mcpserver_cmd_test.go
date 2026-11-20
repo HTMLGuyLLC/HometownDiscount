@@ -521,3 +521,51 @@ func TestMCPUsesEveryConfiguredModel(t *testing.T) {
 		t.Errorf("the small model proved it and is faster: %q", text)
 	}
 }
+
+// A model taken out of config.toml (or swapped for another) stops being used
+// on the very next call, without restarting Claude Code.
+func TestMCPFollowsChangedModels(t *testing.T) {
+	home, _ := hermetic(t)
+	mcpProject(t)
+	answer := func(who string) func(int, chatRequest) fakeReply {
+		return func(int, chatRequest) fakeReply { return fakeReply{Content: who + ": Charge is on line 3.", Tokens: 8} }
+	}
+	old := newFakeServer(t, modelList("old-q4"), answer("old"))
+	fresh := newFakeServer(t, modelList("new-q4"), answer("new"))
+	oldRung := configureLocal(t, home, old, "old-q4")
+	proveLookup(t, home, oldRung)
+	s := startMCP(t)
+	ask := map[string]any{"task": "On which line is Charge defined?", "files": []string{"app.go"}, "skill": "lookup"}
+	if text, isErr := s.askLocal(ask); isErr || !strings.HasSuffix(text, "old: Charge is on line 3.") {
+		t.Fatalf("the configured model should answer: %q", text)
+	}
+	seen := func() int { old.mu.Lock(); defer old.mu.Unlock(); return old.hits }
+	hits := seen()
+
+	// Swap the model for another that has proven nothing yet.
+	newRung := configureLocal(t, home, fresh, "new-q4")
+	text, _ := s.askLocal(ask)
+	if !strings.Contains(text, "Not handed to the local model") || strings.Contains(text, "old:") {
+		t.Errorf("the removed model must not answer: %q", text)
+	}
+	if seen() != hits {
+		t.Error("code was still sent to the removed model's server")
+	}
+	if d := s.toolDescription(); !saysNothingProven(d) {
+		t.Errorf("description after the swap:\n%s", d)
+	}
+
+	// Once the new model proves lookup it takes the work.
+	proveLookup(t, home, newRung)
+	if text, isErr := s.askLocal(ask); isErr || !strings.HasSuffix(text, "new: Charge is on line 3.") {
+		t.Errorf("the new model should answer: %q", text)
+	}
+
+	// Removing every model leaves a clear way to fix it.
+	if err := config.Save(home, config.Default()); err != nil {
+		t.Fatal(err)
+	}
+	if text, _ := s.askLocal(ask); !strings.Contains(text, "htd setup") {
+		t.Errorf("no models left: %q", text)
+	}
+}

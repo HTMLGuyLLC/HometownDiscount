@@ -210,7 +210,19 @@ type Delegation struct {
 	AnswerBytes int     `json:"answer_bytes,omitempty"`
 	Seconds     float64 `json:"seconds"`
 	Outcome     string  `json:"outcome"` // answered, refused, error
+	// Reason says why a call was refused: one of the Refused* values. Older
+	// log lines don't have it.
+	Reason string `json:"reason,omitempty"`
 }
+
+// Why a call was refused.
+const (
+	RefusedUnproven    = "unproven"    // no model has proven this skill at this size
+	RefusedSlow        = "slow"        // proven, but Claude keeps it for speed or by your setting
+	RefusedUnreachable = "unreachable" // the model's server isn't answering
+	RefusedTooBig      = "too_big"     // the files are bigger than skill checks go up to
+	RefusedContext     = "context"     // the files don't fit the server's context
+)
 
 // Handler serves ask_local.
 type Handler struct {
@@ -285,12 +297,12 @@ func (h *Handler) Call(ctx context.Context, name string, raw json.RawMessage) mc
 			h.Log(d)
 		}
 	}()
-	refuse := func(why string) mcp.Result {
-		d.Outcome = "refused"
+	refuse := func(reason, why string) mcp.Result {
+		d.Outcome, d.Reason = "refused", reason
 		return mcp.Result{Text: "Not handed to the local model: " + why + " Do this yourself."}
 	}
 	if h.Setup != nil {
-		return refuse("the local model server isn't reachable (" + h.Setup.Error() + ").")
+		return refuse(RefusedUnreachable, "the local model server isn't reachable ("+h.Setup.Error()+").")
 	}
 
 	blocks, lines, bytes, err := h.read(a.Files)
@@ -301,27 +313,27 @@ func (h *Handler) Call(ctx context.Context, name string, raw json.RawMessage) mc
 	d.Lines, d.Bytes = lines, bytes
 	d.Size = skills.SizeOfInput(lines, bytes)
 	if d.Size == "" {
-		return refuse(fmt.Sprintf("the files are %d lines and %d KB, more than skill checks go up to (%d lines, 256 KB).", lines, bytes>>10, skills.MaxLines))
+		return refuse(RefusedTooBig, fmt.Sprintf("the files are %d lines and %d KB, more than skill checks go up to (%d lines, 256 KB).", lines, bytes>>10, skills.MaxLines))
 	}
 	route, ok := h.Gate[a.Skill][d.Size]
 	if ok && route.Why != "" {
-		return refuse(fmt.Sprintf("%q at %d lines is proven for %s, but Claude does it: %s.", a.Skill, lines, h.Label, route.Why))
+		return refuse(RefusedSlow, fmt.Sprintf("%q at %d lines is proven for %s, but Claude does it: %s.", a.Skill, lines, h.Label, route.Why))
 	}
 	if !ok {
 		takes := h.Gate.Summary()
 		if takes == "" {
 			takes = "nothing yet"
 		}
-		return refuse(fmt.Sprintf("%q at %d lines isn't proven for %s (it takes: %s).", a.Skill, lines, h.Label, takes))
+		return refuse(RefusedUnproven, fmt.Sprintf("%q at %d lines isn't proven for %s (it takes: %s).", a.Skill, lines, h.Label, takes))
 	}
 
 	d.Model = route.model
 	m, ok := h.Models[route.Rung]
 	if !ok {
-		return refuse(fmt.Sprintf("the local model proven for %q (%s) isn't reachable right now.", a.Skill, route.model))
+		return refuse(RefusedUnreachable, fmt.Sprintf("the local model proven for %q (%s) isn't reachable right now.", a.Skill, route.model))
 	}
 	if m.Context > 0 && len(blocks)/3+1000 > m.Context {
-		return refuse(fmt.Sprintf("the files don't fit the server's context (%d tokens); raise it in your model server's settings.", m.Context))
+		return refuse(RefusedContext, fmt.Sprintf("the files don't fit the server's context (%d tokens); raise it in your model server's settings.", m.Context))
 	}
 	reply, _, err := m.Client.Chat(ctx, []llm.Message{
 		{Role: "system", Content: skills.SystemPrompt},

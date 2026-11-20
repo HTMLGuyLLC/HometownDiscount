@@ -5,7 +5,6 @@
 package ui
 
 import (
-	"encoding/json"
 	"sort"
 	"strings"
 	"time"
@@ -14,7 +13,6 @@ import (
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/config"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/delegate"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/history"
-	"github.com/HTMLGuyLLC/HometownDiscount/internal/jobtype"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/ladder"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/pricing"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/skills"
@@ -48,47 +46,48 @@ type Input struct {
 	Now         time.Time
 	Theme       string // [ui] theme: auto, light or dark
 	Tracking    bool   // [privacy] track_handoffs
+	// ConfigError is why config.toml couldn't be read, in plain words; the
+	// report then uses the defaults.
+	ConfigError string
 	// Reads are the files Claude read in the last ReadsDays days of
 	// transcripts, for the most ask_local could take. ReadsReady is false
 	// while they're still being read.
 	Reads      []history.ReadSample
 	ReadsDays  int
 	ReadsReady bool
+	ReadsErr   string // why the transcripts couldn't be read, "" when they could
 }
 
 // Report is the page's data, sent as JSON.
 type Report struct {
-	Generated time.Time `json:"generated"`
-	Theme     string    `json:"theme"` // auto (follow the computer), light or dark
-	Totals    Totals    `json:"totals"`
-	Models    []Model   `json:"models"`
-	Days      []Day     `json:"days"`
-	Handoffs  []Handoff `json:"handoffs"`
-	Savings   Savings   `json:"savings"`
+	Generated   time.Time `json:"generated"`
+	Theme       string    `json:"theme"`                  // auto (follow the computer), light or dark
+	ConfigError string    `json:"config_error,omitempty"` // config.toml couldn't be read: these are the defaults
+	Looks       []int     `json:"looks"`                  // the check-ins a learning cell heads for
+	Totals      Totals    `json:"totals"`
+	Models      []Model   `json:"models"`
+	Days        []Day     `json:"days"`
+	Handoffs    []Handoff `json:"handoffs"`
+	Savings     Savings   `json:"savings"`
 }
 
 // Totals are the headline numbers.
 type Totals struct {
-	Answered   int       `json:"answered"`    // ask_local calls answered locally
-	Refused    int       `json:"refused"`     // ask_local calls Claude kept
-	TokensKept int       `json:"tokens_kept"` // file contents kept out of Claude's context
-	Worth      float64   `json:"worth,omitempty"`
-	WorthModel string    `json:"worth_model,omitempty"` // the Claude model the worth is priced at
-	GoLocal    int       `json:"go_local"`              // task sizes that go local now, over every model
-	Graded     int       `json:"graded"`                // checks and replays graded
-	Models     int       `json:"models"`
-	LastRun    time.Time `json:"last_run,omitzero"`
-	ClaudeVs   string    `json:"claude_vs,omitempty"` // the Claude model skill checks are timed against
+	GoLocal int       `json:"go_local"` // task sizes that go local now, over every model
+	Graded  int       `json:"graded"`   // checks and replays graded
+	Models  int       `json:"models"`
+	LastRun time.Time `json:"last_run,omitzero"`
 }
 
 // Model is one setup: a local model and how it runs.
 type Model struct {
-	ID      string         `json:"id"`
-	Name    string         `json:"name"`
-	Detail  string         `json:"detail"`
-	Counts  map[string]int `json:"counts"` // cells per result
-	Skills  []Task         `json:"skills"`
-	Replays []Task         `json:"replays"`
+	ID          string         `json:"id"`
+	Name        string         `json:"name"`
+	Detail      string         `json:"detail"`
+	ThinkingOff bool           `json:"thinking_off"` // runs with thinking turned off
+	Counts      map[string]int `json:"counts"`       // cells per result
+	Skills      []Task         `json:"skills"`
+	Replays     []Task         `json:"replays"`
 }
 
 // Task is one row: a skill check, or a replayed job type against one Claude
@@ -96,7 +95,6 @@ type Model struct {
 type Task struct {
 	Type  string `json:"type"` // as stored, e.g. "skill:lookup" or "find"
 	Name  string `json:"name"` // in plain words
-	Code  string `json:"code"` // the short name settings use, e.g. "lookup"
 	Vs    string `json:"vs,omitempty"`
 	Cells []Cell `json:"cells"`
 }
@@ -110,13 +108,13 @@ type Cell struct {
 	Graded     int       `json:"graded"`
 	Skipped    int       `json:"skipped,omitempty"`
 	Next       int       `json:"next,omitempty"` // the check-in a learning cell is heading for
-	Lower      float64   `json:"lower"`          // the proof line: how sure htd is it clears the bar
 	Bar        float64   `json:"bar"`
 	Secs       float64   `json:"secs,omitempty"`        // the local model's median time
 	ClaudeSecs float64   `json:"claude_secs,omitempty"` // skill checks: Claude's typical time
 	Speed      string    `json:"speed"`                 // ok, slow or unknown
-	Pace       string    `json:"pace"`                  // e.g. "2.9× Claude's time"
-	Limit      string    `json:"limit"`                 // e.g. "limit +20%"
+	PaceWords  string    `json:"pace_words"`            // e.g. "2.9× as long as Claude"
+	LimitWords string    `json:"limit_words"`           // e.g. "speed limit: up to 20% slower"
+	NeverLocal bool      `json:"never_local"`           // your settings keep it on Claude
 	Last       time.Time `json:"last,omitzero"`
 	Trend      []Point   `json:"trend,omitempty"`
 }
@@ -134,7 +132,6 @@ type Day struct {
 	Date     string         `json:"date"` // YYYY-MM-DD, local time
 	Checks   int            `json:"checks"`
 	Handoffs int            `json:"handoffs"`
-	Kept     int            `json:"kept"`  // tokens handoffs kept out of Claude
 	Local    map[string]int `json:"local"` // model id -> task sizes that went local by the day's end
 }
 
@@ -159,20 +156,13 @@ func Build(in Input) Report {
 	if in.Theme == "" {
 		in.Theme = "auto"
 	}
-	rep := Report{Generated: in.Now, Theme: in.Theme}
+	rep := Report{Generated: in.Now, Theme: in.Theme, ConfigError: in.ConfigError, Looks: ladder.Looks}
 	rep.Models = models(rows, trends(in.Runs))
 	rep.Days = days(in)
 	rep.Handoffs = handoffs(in.Delegations)
 	rep.Savings = savings(in, rows)
 
-	s := delegate.Summarize(in.Delegations)
-	rep.Totals = Totals{Answered: s.Answered, Refused: s.Refused, TokensKept: s.Tokens(), Models: len(rep.Models)}
-	if worth, ok := delegate.Worth(s.Tokens(), in.Claude, in.Prices); ok {
-		rep.Totals.Worth, rep.Totals.WorthModel = worth, pricing.Display(in.Claude.Model)
-	}
-	if in.Claude.Model != "" {
-		rep.Totals.ClaudeVs = pricing.Display(in.Claude.Model)
-	}
+	rep.Totals.Models = len(rep.Models)
 	for _, r := range rows {
 		rep.Totals.Graded += r.Graded
 		if result(r) == Local {
@@ -210,18 +200,6 @@ func nextLook(graded int) int {
 	return 0
 }
 
-// groupKey matches card.Build's grouping: setup, type, size and, for
-// replays, the Claude model they're graded against.
-type groupKey struct{ rung, typ, tier, ref string }
-
-func keyOf(r store.Run) groupKey {
-	k := groupKey{r.Rung, r.Type, r.Tier, ""}
-	if !strings.HasPrefix(r.Type, skills.TypePrefix) {
-		k.ref = pricing.Normalize(r.Reference)
-	}
-	return k
-}
-
 type trend struct {
 	points []Point
 	last   time.Time
@@ -229,12 +207,12 @@ type trend struct {
 
 // trends follows each group check by check: share right and the proof line
 // after each graded run, thinned to maxTrend points (the last one kept).
-func trends(runs []store.Run) map[groupKey]trend {
-	all := map[groupKey][]Point{}
-	last := map[groupKey]time.Time{}
-	passed := map[groupKey]int{}
+func trends(runs []store.Run) map[card.GroupKey]trend {
+	all := map[card.GroupKey][]Point{}
+	last := map[card.GroupKey]time.Time{}
+	passed := map[card.GroupKey]int{}
 	for _, r := range runs {
-		k := keyOf(r)
+		k := card.KeyOf(r)
 		if r.At.After(last[k]) {
 			last[k] = r.At
 		}
@@ -247,7 +225,7 @@ func trends(runs []store.Run) map[groupKey]trend {
 		n := len(all[k]) + 1
 		all[k] = append(all[k], Point{N: n, Rate: float64(passed[k]) / float64(n), Lower: ladder.WilsonLower(passed[k], n), At: r.At})
 	}
-	out := map[groupKey]trend{}
+	out := map[card.GroupKey]trend{}
 	for k, t := range last {
 		out[k] = trend{points: thin(all[k], maxTrend), last: t}
 	}
@@ -269,7 +247,7 @@ func thin(p []Point, max int) []Point {
 }
 
 // models arranges rows by setup, then by task with a cell per size.
-func models(rows []card.Row, tr map[groupKey]trend) []Model {
+func models(rows []card.Row, tr map[card.GroupKey]trend) []Model {
 	out := []Model{}
 	index := map[string]int{}
 	taskIdx := map[[2]string]int{} // setup + type|ref -> index in Skills or Replays
@@ -279,10 +257,10 @@ func models(rows []card.Row, tr map[groupKey]trend) []Model {
 			i = len(out)
 			index[r.Rung] = i
 			name, detail := setupWords(r.Rung)
-			out = append(out, Model{ID: r.Rung, Name: name, Detail: detail, Counts: map[string]int{}, Skills: []Task{}, Replays: []Task{}})
+			out = append(out, Model{ID: r.Rung, Name: name, Detail: detail, ThinkingOff: thinkingOff(r.Rung), Counts: map[string]int{}, Skills: []Task{}, Replays: []Task{}})
 		}
 		m := &out[i]
-		code, isSkill := strings.CutPrefix(r.Type, skills.TypePrefix)
+		_, isSkill := strings.CutPrefix(r.Type, skills.TypePrefix)
 		list := &m.Replays
 		if isSkill {
 			list = &m.Skills
@@ -292,7 +270,7 @@ func models(rows []card.Row, tr map[groupKey]trend) []Model {
 		if !ok {
 			ti = len(*list)
 			taskIdx[tk] = ti
-			t := Task{Type: r.Type, Name: taskName(r.Type), Code: code}
+			t := Task{Type: r.Type, Name: taskName(r.Type)}
 			if r.Reference != "" {
 				t.Vs = pricing.Display(r.Reference)
 			}
@@ -301,7 +279,7 @@ func models(rows []card.Row, tr map[groupKey]trend) []Model {
 			}
 			*list = append(*list, t)
 		}
-		c := cellFrom(r, tr[groupKey{r.Rung, r.Type, r.Tier, r.Reference}])
+		c := cellFrom(r, tr[card.KeyOf(store.Run{Rung: r.Rung, Type: r.Type, Tier: r.Tier, Reference: r.Reference})])
 		m.Counts[c.Result]++
 		task := &(*list)[ti]
 		placed := false
@@ -325,10 +303,11 @@ func cellFrom(r card.Row, t trend) Cell {
 	}
 	c := Cell{
 		Size: size, SizeWords: sizeWords(isSkill, size), Result: result(r),
-		Passed: r.Passed, Graded: r.Graded, Skipped: r.Skipped, Lower: r.Lower, Bar: r.Bar,
+		Passed: r.Passed, Graded: r.Graded, Skipped: r.Skipped, Bar: r.Bar,
 		Secs: r.MedianSecs, ClaudeSecs: r.ClaudeSecs,
-		Pace: r.Speed.Pace(), Limit: r.Speed.Rule.Limit(), Speed: "unknown",
-		Last: t.last, Trend: t.points,
+		PaceWords: paceWords(r.Speed), LimitWords: limitWords(r.Speed.Rule), NeverLocal: r.Speed.Rule.Mode == "never",
+		Speed: "unknown",
+		Last:  t.last, Trend: t.points,
 	}
 	switch {
 	case r.Speed.Kept:
@@ -348,7 +327,7 @@ func cellFrom(r card.Row, t trend) Cell {
 func days(in Input) []Day {
 	loc := in.Now.Location()
 	dates := map[string]bool{}
-	checks, hand, kept := map[string]int{}, map[string]int{}, map[string]int{}
+	checks, hand := map[string]int{}, map[string]int{}
 	for _, r := range in.Runs {
 		d := r.At.In(loc).Format(time.DateOnly)
 		dates[d] = true
@@ -364,7 +343,6 @@ func days(in Input) []Day {
 		dates[day] = true
 		if d.Outcome == "answered" {
 			hand[day]++
-			kept[day] += d.Kept() / 4
 		}
 	}
 	if len(dates) == 0 {
@@ -377,9 +355,12 @@ func days(in Input) []Day {
 		seen = append(seen, d)
 	}
 	sort.Strings(seen)
-	first, _ := time.ParseInLocation(time.DateOnly, seen[0], loc)
-	today, _ := time.ParseInLocation(time.DateOnly, in.Now.In(loc).Format(time.DateOnly), loc)
-	if last, _ := time.ParseInLocation(time.DateOnly, seen[len(seen)-1], loc); last.After(today) {
+	// Days are stepped at noon, not midnight: where the clocks change at
+	// midnight (Santiago, Havana) a midnight-to-midnight step lands on the
+	// same date twice or skips one.
+	first := noon(seen[0], loc)
+	today := noon(in.Now.In(loc).Format(time.DateOnly), loc)
+	if last := noon(seen[len(seen)-1], loc); last.After(today) {
 		today = last
 	}
 	var order []string
@@ -392,8 +373,8 @@ func days(in Input) []Day {
 	out := make([]Day, 0, len(order))
 	upTo, local := -1, map[string]int{}
 	for _, d := range order {
-		day, _ := time.ParseInLocation(time.DateOnly, d, loc)
-		end := day.AddDate(0, 0, 1)
+		day := noon(d, loc)
+		end := time.Date(day.Year(), day.Month(), day.Day()+1, 0, 0, 0, 0, loc)
 		n := 0 // runs are in time order: the ones before the day's end
 		for n < len(in.Runs) && in.Runs[n].At.Before(end) {
 			n++
@@ -406,9 +387,15 @@ func days(in Input) []Day {
 				}
 			}
 		}
-		out = append(out, Day{Date: d, Checks: checks[d], Handoffs: hand[d], Kept: kept[d], Local: local})
+		out = append(out, Day{Date: d, Checks: checks[d], Handoffs: hand[d], Local: local})
 	}
 	return out
+}
+
+// noon is the middle of a YYYY-MM-DD day in loc.
+func noon(date string, loc *time.Location) time.Time {
+	t, _ := time.Parse(time.DateOnly, date)
+	return time.Date(t.Year(), t.Month(), t.Day(), 12, 0, 0, 0, loc)
 }
 
 // handoffs are the latest ask_local calls, newest first.
@@ -422,95 +409,4 @@ func handoffs(ds []delegate.Delegation) []Handoff {
 		})
 	}
 	return out
-}
-
-// skillNames are the skill checks in plain words.
-var skillNames = map[string]string{
-	skills.JSON:   "Read a JSON value",
-	skills.Lookup: "Find a definition",
-	skills.Lines:  "Find matching lines",
-	skills.List:   "List what a file declares",
-	skills.Files:  "Find which files mention something",
-}
-
-// replayNames are replayed job types in plain words.
-var replayNames = map[string]string{
-	jobtype.Find:      "Find jobs",
-	jobtype.Extract:   "Extract jobs",
-	jobtype.Classify:  "Classify jobs",
-	jobtype.Transform: "Transform jobs",
-	jobtype.Review:    "Review jobs",
-	jobtype.Research:  "Research jobs",
-}
-
-func taskName(typ string) string {
-	if s, ok := strings.CutPrefix(typ, skills.TypePrefix); ok {
-		if n, ok := skillNames[s]; ok {
-			return n
-		}
-		return s
-	}
-	if n, ok := replayNames[typ]; ok {
-		return n
-	}
-	return typ + " jobs"
-}
-
-func sizesFor(isSkill bool, tier string) []string {
-	switch {
-	case isSkill:
-		return skills.SizeOrder
-	case tier == "":
-		return []string{"any"}
-	}
-	return []string{"small", "large"}
-}
-
-func sizeWords(isSkill bool, size string) string {
-	if isSkill {
-		switch size {
-		case skills.Small:
-			return "up to 200 lines"
-		case skills.Medium:
-			return "up to 1,000 lines"
-		case skills.Large:
-			return "up to 4,000 lines"
-		}
-	}
-	switch size {
-	case "small":
-		return "few tool calls"
-	case "large":
-		return "many tool calls"
-	}
-	return "any size"
-}
-
-// setupWords splits a stored setup into a short name, e.g. "Qwen3.8-27B",
-// and the rest, e.g. "mlx-community · 4bit · builtin loop · thinking off".
-func setupWords(id string) (string, string) {
-	var r store.Rung
-	if json.Unmarshal([]byte(id), &r) != nil || r.Model == "" {
-		return id, ""
-	}
-	name := r.Model
-	var parts []string
-	if org, short, ok := strings.Cut(r.Model, "/"); ok && short != "" {
-		name = short
-		parts = append(parts, org)
-	}
-	if r.Quant != "" {
-		parts = append(parts, r.Quant)
-	}
-	if r.Loop != "" {
-		parts = append(parts, r.Loop+" loop")
-	}
-	switch r.Effort {
-	case "":
-	case store.ThinkingOff:
-		parts = append(parts, "thinking off")
-	default:
-		parts = append(parts, "effort "+r.Effort)
-	}
-	return name, strings.Join(parts, " · ")
 }

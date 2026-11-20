@@ -18,7 +18,7 @@ import (
 
 // runCard shows the evidence per setup and job type.
 func runCard(args []string, stdout, stderr io.Writer) error {
-	fs := command("card", "[--details]", "What each local model has earned, per task and size: proven, too slow,\nlearning or not good enough.", stderr)
+	fs := command("card", "[--details]", "What each local model has earned, per task and size: goes local,\nstays with Claude, learning or not good enough.", stderr)
 	details := fs.Bool("details", false, "show every number: passes, bounds, bars and timing per type and size")
 	if err := fs.Parse(args); err != nil {
 		return err

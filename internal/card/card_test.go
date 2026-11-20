@@ -70,14 +70,14 @@ func TestHeadline(t *testing.T) {
 	var buf bytes.Buffer
 	Headline(&buf, Build(runs, map[string]string{"r1": "Qwen"}))
 	out := buf.String()
-	for _, want := range []string{"Can take now:    lookup (up to 1,000 lines)", "Not proven yet:  list (files up to 200 lines, 1 of 1 passed)", "Not good enough: find jobs (small, 0 of 5 passed)", "To prove more: run `htd bench`"} {
+	for _, want := range []string{"Goes local:        lookup (up to 1,000 lines)", "Learning:          list (files up to 200 lines, 1 of 1 passed)", "Not good enough:   find jobs (small, 0 of 5 passed)", "To prove more: run `htd bench`"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("headline missing %q:\n%s", want, out)
 		}
 	}
 }
 
-// A proven skill that's too slow for its limit moves to "Too slow", and the
+// A proven skill that's too slow for its limit moves to "Stays with Claude", and the
 // details say why; a size within the limit still counts as taken.
 func TestSpeedOnTheCard(t *testing.T) {
 	var runs []store.Run
@@ -99,8 +99,8 @@ func TestSpeedOnTheCard(t *testing.T) {
 	Headline(&buf, rows)
 	out := buf.String()
 	for _, want := range []string{
-		"Can take now:    lookup (files up to 200 lines)",
-		"Too slow:        lookup over 1,000 lines (vs Claude: limit +20%)",
+		"Goes local:        lookup (files up to 200 lines)",
+		"Stays with Claude: lookup over 1,000 lines (vs Claude: limit +20%)",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("headline missing %q:\n%s", want, out)

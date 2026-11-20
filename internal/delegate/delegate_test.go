@@ -3,6 +3,7 @@ package delegate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -282,5 +283,32 @@ func TestEvidenceAcrossModels(t *testing.T) {
 	h.Models[big.ID()] = Model{Client: llm.New(bigSrv.URL, "big"), Context: 10}
 	if out := call(h, `{"task":"where is Parse defined?","files":["a.go"],"skill":"lookup"}`); !strings.Contains(out, "don't fit") {
 		t.Errorf("the chosen model's own context applies: %q", out)
+	}
+}
+
+// Each refusal is logged with why, for the savings page.
+func TestRefusalReasons(t *testing.T) {
+	h, log := handler(t, Gate{"lookup": {"small": {}, "medium": {Why: "it's 3× Claude's time"}}})
+	call(h, `{"task":"x","files":["a.go"],"skill":"list"}`) // not proven
+	os.WriteFile(filepath.Join(h.Root, "m.txt"), []byte(strings.Repeat("line\n", 300)), 0o644)
+	call(h, `{"task":"x","files":["m.txt"],"skill":"lookup"}`) // proven, but slow
+	os.WriteFile(filepath.Join(h.Root, "big.txt"), []byte(strings.Repeat("line\n", 5000)), 0o644)
+	call(h, `{"task":"x","files":["big.txt"],"skill":"lookup"}`) // too big
+	h.Models = map[string]Model{"": {Client: h.Models[""].Client, Context: 10}}
+	call(h, `{"task":"x","files":["a.go"],"skill":"lookup"}`) // doesn't fit
+	h.Models = nil
+	call(h, `{"task":"x","files":["a.go"],"skill":"lookup"}`) // model not connected
+	h.Setup = errors.New("down")
+	call(h, `{"task":"x","files":["a.go"],"skill":"lookup"}`) // server down
+	var got []string
+	for _, d := range *log {
+		got = append(got, d.Reason)
+	}
+	if want := "unproven,slow,too_big,context,unreachable,unreachable"; strings.Join(got, ",") != want {
+		t.Errorf("reasons = %v, want %s", got, want)
+	}
+	b, _ := json.Marshal(Delegation{Outcome: "answered"})
+	if strings.Contains(string(b), "reason") {
+		t.Errorf("an answered call has no reason: %s", b)
 	}
 }

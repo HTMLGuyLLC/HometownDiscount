@@ -68,7 +68,7 @@ func TestBuildResults(t *testing.T) {
 	if c := cell(t, m, "Find a definition", "small"); c.Result != Local || c.Speed != "ok" || c.Passed != 24 || c.Graded != 24 {
 		t.Errorf("small lookup: %+v", c)
 	}
-	if c := cell(t, m, "Find a definition", "medium"); c.Result != Slow || c.Speed != "slow" || c.Pace != "5.0× Claude's time" || c.Limit != "limit +20%" {
+	if c := cell(t, m, "Find a definition", "medium"); c.Result != Slow || c.Speed != "slow" || c.PaceWords != "5.0× as long as Claude" || c.LimitWords != "speed limit: up to 20% slower" || c.NeverLocal {
 		t.Errorf("medium lookup: %+v", c)
 	}
 	if c := cell(t, m, "Find a definition", "large"); c.Result != NotRun {
@@ -83,7 +83,7 @@ func TestBuildResults(t *testing.T) {
 	if m.Counts[Local] != 1 || m.Counts[Slow] != 1 || m.Counts[Learning] != 1 || m.Counts[NotGood] != 1 {
 		t.Errorf("counts: %v", m.Counts)
 	}
-	if rep.Totals.GoLocal != 1 || rep.Totals.Graded != 63 || rep.Totals.Models != 1 || rep.Totals.ClaudeVs != "Opus 5.5" {
+	if rep.Totals.GoLocal != 1 || rep.Totals.Graded != 63 || rep.Totals.Models != 1 {
 		t.Errorf("totals: %+v", rep.Totals)
 	}
 	if !rep.Totals.LastRun.Equal(day1.Add(4 * time.Hour)) {
@@ -102,7 +102,7 @@ func TestBuildReplays(t *testing.T) {
 		t.Fatalf("rows: %+v", m)
 	}
 	for _, task := range m.Replays {
-		if task.Name != "Find jobs" || task.Code != "find" || len(task.Cells) != 2 || task.Cells[0].Size != "small" || task.Cells[1].Size != "large" {
+		if task.Name != "Find jobs" || len(task.Cells) != 2 || task.Cells[0].Size != "small" || task.Cells[1].Size != "large" {
 			t.Errorf("replay row: %+v", task)
 		}
 	}
@@ -175,18 +175,15 @@ func TestHandoffs(t *testing.T) {
 	if len(rep.Handoffs) != 2 || rep.Handoffs[0].Outcome != "refused" || rep.Handoffs[1].Task != "Read a JSON value" || rep.Handoffs[1].TokensKept != 1000 {
 		t.Errorf("handoffs: %+v", rep.Handoffs)
 	}
-	if rep.Totals.Answered != 1 || rep.Totals.Refused != 1 || rep.Totals.TokensKept != 1000 {
-		t.Errorf("totals: %+v", rep.Totals)
-	}
-	if rep.Totals.Worth != 0 {
-		t.Errorf("no prices, no dollar figure: %+v", rep.Totals)
+	if s := rep.Savings; s.Answered != 1 || s.Refused != 1 || s.TokensKept != 1000 || s.Worth != 0 {
+		t.Errorf("savings (no prices, no dollar figure): %+v", s)
 	}
 }
 
 // An empty store is a report with empty lists, never nulls the page trips on.
 func TestBuildEmpty(t *testing.T) {
 	rep := Build(Input{})
-	if rep.Models == nil || rep.Days == nil || rep.Handoffs == nil || rep.Generated.IsZero() || rep.Theme != "auto" {
+	if rep.Models == nil || rep.Days == nil || rep.Handoffs == nil || rep.Generated.IsZero() || rep.Theme != "auto" || len(rep.Looks) != 7 || rep.Looks[0] != 24 || rep.ConfigError != "" {
 		t.Errorf("empty report: %+v", rep)
 	}
 }
@@ -200,5 +197,75 @@ func TestSetupWords(t *testing.T) {
 		if n, d := setupWords(id); n != want[0] || d != want[1] {
 			t.Errorf("setupWords(%s) = %q, %q; want %q", id, n, d, want)
 		}
+	}
+}
+
+func TestPaceAndLimitWords(t *testing.T) {
+	v := func(ratio float64, rule speed.Rule) speed.Verdict { return speed.Decide(rule, ratio, true) }
+	limit := speed.Rule{Mode: "limit", MaxSlower: 20, From: "default"}
+	for _, c := range []struct {
+		v    speed.Verdict
+		want string
+	}{
+		{speed.Decide(limit, 0, false), "speed not compared yet"},
+		{v(0.5, limit), "half Claude's time"},
+		{v(0.7, limit), "30% faster than Claude"},
+		{v(1, limit), "as fast as Claude"},
+		{v(1.3, limit), "30% slower than Claude"},
+		{v(2.9, limit), "2.9× as long as Claude"},
+	} {
+		if got := paceWords(c.v); got != c.want {
+			t.Errorf("paceWords(%+v) = %q, want %q", c.v, got, c.want)
+		}
+	}
+	for rule, want := range map[speed.Rule]string{
+		limit:                             "speed limit: up to 20% slower",
+		{Mode: "never", From: "lookup"}:   "your setting: never local",
+		{Mode: "always", From: "lookup"}:  "your setting: always local",
+		{Mode: "always", From: "default"}: "speed check is off",
+	} {
+		if got := limitWords(rule); got != want {
+			t.Errorf("limitWords(%+v) = %q, want %q", rule, got, want)
+		}
+	}
+}
+
+// A never rule is flagged so the page can say why it stays with Claude.
+func TestNeverLocalCell(t *testing.T) {
+	runs := checks("skill:lookup", "small", 24, 24, 1, day1)
+	rep := Build(Input{Runs: runs, Speed: config.Speed{MaxSlower: 20, ByTask: map[string]any{"lookup": "never"}}, Claude: claude2, Now: now})
+	c := cell(t, rep.Models[0], "Find a definition", "small")
+	if c.Result != Slow || !c.NeverLocal || c.LimitWords != "your setting: never local" {
+		t.Errorf("%+v", c)
+	}
+	if !rep.Models[0].ThinkingOff {
+		t.Error("the test setup runs with thinking off")
+	}
+}
+
+// Where the clocks change at midnight, every date shows once and today is
+// the last one.
+func TestDaysAcrossMidnightDST(t *testing.T) {
+	loc, err := time.LoadLocation("America/Santiago")
+	if err != nil {
+		t.Skip("no time zone data")
+	}
+	// Chile's clocks skip midnight on the first Sunday of September.
+	start := time.Date(2026, 9, 1, 10, 0, 0, 0, loc)
+	today := time.Date(2026, 9, 12, 15, 0, 0, 0, loc)
+	var runs []store.Run
+	for i := 0; i < 3; i++ {
+		runs = append(runs, checks("skill:lookup", "small", 2, 2, 1, start.AddDate(0, 0, 4*i))...)
+	}
+	got := Build(Input{Runs: runs, Speed: speeds, Claude: claude2, Now: today}).Days
+	seen := map[string]bool{}
+	for _, d := range got {
+		if seen[d.Date] {
+			t.Errorf("%s twice", d.Date)
+		}
+		seen[d.Date] = true
+	}
+	if len(got) != 13 || got[0].Date != "2026-08-31" || got[len(got)-1].Date != "2026-09-12" || !seen["2026-09-06"] || !seen["2026-09-07"] {
+		t.Errorf("%d days, first %s, last %s", len(got), got[0].Date, got[len(got)-1].Date)
 	}
 }

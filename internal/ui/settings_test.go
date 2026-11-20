@@ -58,53 +58,91 @@ func TestSettingsErrors(t *testing.T) {
 		edit func(*Settings)
 		want string
 	}{
-		"no url":     {func(s *Settings) { s.Models = []ModelSetting{{URL: "localhost", Model: "m"}} }, "server address"},
-		"no model":   {func(s *Settings) { s.Models = []ModelSetting{{URL: "http://127.0.0.1:8000"}} }, "model's name"},
-		"pin":        {func(s *Settings) { s.Pins = []Pin{{Skill: "lookup", Model: "not-listed"}} }, "not-listed"},
-		"bad theme":  {func(s *Settings) { s.Theme = "neon" }, "theme"},
+		"no url":    {func(s *Settings) { s.Models = []ModelSetting{{URL: "localhost", Model: "m"}} }, "server address"},
+		"no model":  {func(s *Settings) { s.Models = []ModelSetting{{URL: "http://127.0.0.1:8000"}} }, "model's name"},
+		"pin":       {func(s *Settings) { s.Pins = []Pin{{Skill: "lookup", Model: "not-listed"}} }, "The rule for Find a definition (any size) uses not-listed, which isn't in your models anymore. Pick another model or remove the rule."},
+		"bad theme": {func(s *Settings) { s.Theme = "neon" }, "Theme: choose auto, light or dark"},
+		"dup limit": {func(s *Settings) {
+			s.Limits = []Limit{{Task: "lookup", Rule: "never"}, {Task: "lookup", Rule: "percent", Percent: 5}}
+		}, "Speed limit for Find a definition (any size) is set twice."},
+		"dup pin": {func(s *Settings) {
+			s.Models = []ModelSetting{{URL: "http://127.0.0.1:8000", Model: "m"}}
+			s.Pins = []Pin{{Skill: "lookup", Size: "small", Model: "m"}, {Skill: "lookup", Size: "small", Model: "m"}}
+		}, "Model choice for Find a definition (up to 200 lines) is set twice."},
+		"unknown task": {func(s *Settings) {
+			s.Limits = []Limit{{Task: "lookup", Rule: "never"}, {Task: "lookup", Size: "small", Rule: "always"}, {Task: "bogus", Rule: "never"}}
+		}, "pick a task"},
 		"bad size":   {func(s *Settings) { s.Limits = []Limit{{Task: "find", Size: "medium", Rule: "never"}} }, "small or large"},
 		"negative":   {func(s *Settings) { s.MaxSlower = -5 }, "0 or more"},
-		"no claude":  {func(s *Settings) { s.ClaudeModel = " " }, "claude_model"},
-		"bad prefer": {func(s *Settings) { s.Prefer = "random" }, "prefer"},
+		"no claude":  {func(s *Settings) { s.ClaudeModel = " " }, "Claude model"},
+		"bad prefer": {func(s *Settings) { s.Prefer = "random" }, "Which model goes first"},
 	} {
 		s := base
 		s.Models, s.Pins, s.Limits = nil, nil, nil
 		tc.edit(&s)
 		if _, _, err := s.Config(); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: %v, want it to mention %q", name, err, tc.want)
+		} else if strings.Contains(err.Error(), "[") || strings.Contains(err.Error(), "by_task") {
+			t.Errorf("%s: %q reads like the file, not the form", name, err)
 		}
 	}
 }
 
-func post(h http.Handler, path, token string, body any, headers map[string]string) *httptest.ResponseRecorder {
+func post(h http.Handler, path string, body any, headers map[string]string) *httptest.ResponseRecorder {
 	b, _ := json.Marshal(body)
 	req := httptest.NewRequest("POST", path, bytes.NewReader(b))
 	req.Host = "127.0.0.1:8765"
 	req.Header.Set("Content-Type", "application/json")
-	if token != "" {
-		req.Header.Set("X-HTD-Token", token)
-	}
+	req.AddCookie(&http.Cookie{Name: CookieName, Value: testKey})
 	for k, v := range headers {
-		req.Header.Set(k, v)
+		switch v {
+		case "":
+			req.Header.Del(k)
+		case "<empty>": // sent, with nothing in it
+			req.Header[http.CanonicalHeaderKey(k)] = []string{""}
+		default:
+			req.Header.Set(k, v)
+		}
 	}
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	return w
 }
 
-// The page reads the settings and its token, previews the file and saves it.
+func version(v *string) map[string]string {
+	if v == nil {
+		return nil
+	}
+	return map[string]string{VersionHeader: *v}
+}
+
+func readSettings(t *testing.T, h http.Handler) settingsReply {
+	t.Helper()
+	var got settingsReply
+	w := get(h, "GET", "/api/settings", "127.0.0.1:8765")
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &got) != nil || got.Settings == nil || got.Options == nil || got.Version == nil {
+		t.Fatalf("get: %d %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "token") {
+		t.Errorf("no token any more: %s", w.Body.String())
+	}
+	return got
+}
+
+// The page reads the settings, previews the file and saves it, and each
+// save hands back the version the next one is made from.
 func TestSettingsAPI(t *testing.T) {
 	dir := t.TempDir()
-	h := Handler(func() (Report, error) { return Build(Input{}), nil }, dir)
-	var got settingsReply
-	if w := get(h, "GET", "/api/settings", "127.0.0.1:8765"); w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &got) != nil || got.Token == "" || got.Settings == nil || got.Options == nil {
-		t.Fatalf("get: %d %s", w.Code, w.Body.String())
+	h := Handler(func() (Report, error) { return Build(Input{}), nil }, dir, testKey)
+	got := readSettings(t, h)
+	if *got.Version != "" {
+		t.Errorf("no file yet, no version: %q", *got.Version)
 	}
 	s := *got.Settings
 	s.Theme = "dark"
 	s.Models = []ModelSetting{{URL: "http://127.0.0.1:8000", Model: "tiny"}}
 
-	w := post(h, "/api/settings/preview", got.Token, s, nil)
+	w := post(h, "/api/settings/preview", s, nil)
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `theme = \"dark\"`) {
 		t.Errorf("preview: %d %s", w.Code, w.Body.String())
 	}
@@ -112,47 +150,102 @@ func TestSettingsAPI(t *testing.T) {
 		t.Error("a preview must not save")
 	}
 
-	w = post(h, "/api/settings", got.Token, s, map[string]string{"Origin": "http://127.0.0.1:8765"})
-	if w.Code != 200 {
+	w = post(h, "/api/settings", s, map[string]string{"Origin": "http://127.0.0.1:8765", VersionHeader: *got.Version})
+	var saved settingsReply
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &saved) != nil || !saved.Saved || saved.Version == nil || *saved.Version == "" {
 		t.Fatalf("save: %d %s", w.Code, w.Body.String())
 	}
 	c, err := config.Load(dir)
 	if err != nil || c.UI.Theme != "dark" || len(c.Local) != 1 || c.Local[0].Model != "tiny" || c.Local[0].Loop != "builtin" {
 		t.Errorf("saved: %+v, %v", c, err)
 	}
+	if again := readSettings(t, h); *again.Version != *saved.Version {
+		t.Errorf("the version after a save is the one it returned: %q vs %q", *again.Version, *saved.Version)
+	}
 
+	// The new version lets the page save again; the old one doesn't.
+	s.Theme = "light"
+	if w := post(h, "/api/settings", s, version(saved.Version)); w.Code != 200 {
+		t.Errorf("second save: %d %s", w.Code, w.Body.String())
+	}
 	s.Theme = "neon"
-	if w := post(h, "/api/settings", got.Token, s, nil); w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "theme") {
+	if w := post(h, "/api/settings", s, version(got.Version)); w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "Theme") {
 		t.Errorf("bad settings: %d %s", w.Code, w.Body.String())
 	}
-	if c, _ := config.Load(dir); c.UI.Theme != "dark" {
+	if c, _ := config.Load(dir); c.UI.Theme != "light" {
 		t.Error("bad settings must not be saved")
 	}
 }
 
-// Only this page can change settings: other sites can't read its token or
-// send JSON with it, and a form post can't do either.
+// A save made from an old copy of the page doesn't wipe out what changed
+// in the file since.
+func TestSettingsVersionConflict(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(config.Path(dir), []byte("[ui]\ntheme = \"light\"\n"), 0o600)
+	h := Handler(func() (Report, error) { return Report{}, nil }, dir, testKey)
+	got := readSettings(t, h)
+	if len(*got.Version) != 64 {
+		t.Errorf("version %q", *got.Version)
+	}
+	s := *got.Settings
+	s.Theme = "dark"
+
+	// Edited by hand (or by an AI) after the page loaded.
+	os.WriteFile(config.Path(dir), []byte("[ui]\ntheme = \"light\"\n[speed]\nmax_slower = 5\n"), 0o600)
+	for name, hdr := range map[string]map[string]string{"old version": version(got.Version), "no version": nil, "empty version": {VersionHeader: "<empty>"}} {
+		w := post(h, "/api/settings", s, hdr)
+		if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "changed since you opened this page") {
+			t.Errorf("%s: %d %s", name, w.Code, w.Body.String())
+		}
+	}
+	if c, _ := config.Load(dir); c.UI.Theme != "light" || c.Speed.MaxSlower != 5 {
+		t.Errorf("the newer file must be left alone: %+v", c)
+	}
+	// A preview isn't a save, so it doesn't check.
+	if w := post(h, "/api/settings/preview", s, nil); w.Code != 200 {
+		t.Errorf("preview: %d", w.Code)
+	}
+	// Reload, edit again, save.
+	fresh := readSettings(t, h)
+	s = *fresh.Settings
+	s.Theme = "dark"
+	if w := post(h, "/api/settings", s, version(fresh.Version)); w.Code != 200 {
+		t.Errorf("after a reload: %d %s", w.Code, w.Body.String())
+	}
+	if c, _ := config.Load(dir); c.Speed.MaxSlower != 5 || c.UI.Theme != "dark" {
+		t.Errorf("both edits kept: %+v", c)
+	}
+}
+
+// Writes need JSON from this page's own origin.
 func TestSettingsWriteGuards(t *testing.T) {
 	dir := t.TempDir()
-	h := Handler(func() (Report, error) { return Report{}, nil }, dir)
-	var got settingsReply
-	json.Unmarshal(get(h, "GET", "/api/settings", "127.0.0.1:1").Body.Bytes(), &got)
+	h := Handler(func() (Report, error) { return Report{}, nil }, dir, testKey)
+	got := readSettings(t, h)
 	s := *got.Settings
 
 	for name, w := range map[string]*httptest.ResponseRecorder{
-		"no token":    post(h, "/api/settings", "", s, nil),
-		"wrong token": post(h, "/api/settings", "nope", s, nil),
-		"other site":  post(h, "/api/settings", got.Token, s, map[string]string{"Origin": "https://evil.example"}),
-		"form post":   post(h, "/api/settings", got.Token, s, map[string]string{"Content-Type": "application/x-www-form-urlencoded"}),
+		"other site": post(h, "/api/settings", s, map[string]string{"Origin": "https://evil.example"}),
+		"form post":  post(h, "/api/settings", s, map[string]string{"Content-Type": "application/x-www-form-urlencoded"}),
 	} {
 		if w.Code != http.StatusForbidden {
 			t.Errorf("%s: %d %s", name, w.Code, w.Body.String())
 		}
 	}
-	if w := get(h, "GET", "/api/settings", "evil.example"); w.Code != http.StatusForbidden {
-		t.Errorf("another host can't read the token: %d", w.Code)
+	// Without the key cookie nothing is read or written.
+	b, _ := json.Marshal(s)
+	req := httptest.NewRequest("POST", "/api/settings", bytes.NewReader(b))
+	req.Host = "127.0.0.1:1"
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("no cookie: %d", w.Code)
 	}
-	if w := post(h, "/api/report", got.Token, s, nil); w.Code != http.StatusMethodNotAllowed {
+	if w := get(h, "GET", "/api/settings", "evil.example"); w.Code != http.StatusForbidden {
+		t.Errorf("another host can't read settings: %d", w.Code)
+	}
+	if w := post(h, "/api/report", s, nil); w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("other paths stay read-only: %d", w.Code)
 	}
 	if _, err := os.Stat(config.Path(dir)); err == nil {
@@ -164,10 +257,13 @@ func TestSettingsWriteGuards(t *testing.T) {
 func TestSettingsBrokenFile(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(config.Path(dir), []byte("[speed]\nmax_slowr = 5\n"), 0o600)
-	h := Handler(func() (Report, error) { return Report{}, nil }, dir)
+	h := Handler(func() (Report, error) { return Report{}, nil }, dir, testKey)
 	var got settingsReply
 	json.Unmarshal(get(h, "GET", "/api/settings", "127.0.0.1:1").Body.Bytes(), &got)
-	if !strings.Contains(got.Error, "max_slowr") || got.Settings == nil || got.Settings.Prefer != "fastest" {
+	if !strings.Contains(got.Error, "max_slowr") || !strings.Contains(got.Error, "safest fix is to correct that line") || !strings.Contains(got.Error, "not your models") || got.Settings == nil || got.Settings.Prefer != "fastest" {
 		t.Errorf("%+v", got)
+	}
+	if strings.Contains(got.Error, dir) || strings.Contains(got.Error, "..") {
+		t.Errorf("the message should leave out the path and read as one sentence: %s", got.Error)
 	}
 }

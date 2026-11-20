@@ -31,8 +31,8 @@ Usage:
   htd replay [--max N]               Replay your past jobs on each local model and grade each one
   htd mcp                            MCP server: Claude hands proven small tasks to your local models
                                      (claude mcp add --scope user htd -- htd mcp)
-  htd card                           What each local model has earned: proven, learning or not good enough
-  htd ui                             The same, as a page in your browser: per task and size, and over time
+  htd card                           What each local model has earned: goes local, stays with Claude, learning or not good enough
+  htd ui                             The scorecard page: savings, each model's results, and a settings form
   htd hooks [on|off]                 Snapshots: save uncommitted files as subagents start, so replays see what each job saw
   htd forget [--all]                 Delete what htd stored in ~/.htd (--all also deletes your settings)
   htd version                        Print the version

@@ -1,8 +1,7 @@
 package ui
 
 import (
-	"crypto/rand"
-	"crypto/subtle"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,11 +10,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/config"
+	"github.com/HTMLGuyLLC/HometownDiscount/internal/jobtype"
 	"github.com/HTMLGuyLLC/HometownDiscount/internal/skills"
 )
 
@@ -101,9 +102,13 @@ func sortedKeys[V any](m map[string]V) []string {
 
 // Config builds the config file from the form, and checks it the way htd
 // checks the file when it reads it, plus what only a form can get wrong
-// (an empty model, a URL that isn't one).
+// (an empty model, a URL that isn't one, a rule set twice). Errors are in
+// the form's words, not the file's.
 func (s Settings) Config() (config.Config, []byte, error) {
 	c := config.Default()
+	if s.Prefer != "fastest" && s.Prefer != "listed" {
+		return c, nil, errors.New(`Which model goes first: choose "fastest" or "listed"`)
+	}
 	c.Pick.Prefer = s.Prefer
 	c.Speed.MaxSlower = s.MaxSlower
 	if !s.SpeedCheck {
@@ -112,8 +117,15 @@ func (s Settings) Config() (config.Config, []byte, error) {
 		return c, nil, errors.New("Speed limit: use 0 or more percent, or turn the speed check off")
 	}
 	c.Speed.ClaudeModel = strings.TrimSpace(s.ClaudeModel)
+	if c.Speed.ClaudeModel == "" {
+		return c, nil, errors.New(`Claude model: enter "auto" or a model id like claude-opus-5-5`)
+	}
 	c.Privacy.TrackHandoffs = s.TrackHandoffs
+	if !slices.Contains(config.Themes, s.Theme) {
+		return c, nil, errors.New("Theme: choose auto, light or dark")
+	}
 	c.UI.Theme = s.Theme
+	var models []string
 	for i, m := range s.Models {
 		l := config.Local{URL: strings.TrimSpace(m.URL), Model: strings.TrimSpace(m.Model), Quant: strings.TrimSpace(m.Quant), Loop: m.Loop, AllowRemote: m.AllowRemote}
 		if l.Loop == "" {
@@ -129,23 +141,51 @@ func (s Settings) Config() (config.Config, []byte, error) {
 			return c, nil, fmt.Errorf("Model %d: enter the model's name as your server lists it", i+1)
 		}
 		c.Local = append(c.Local, l)
+		models = append(models, l.Model)
 	}
 	if len(s.Pins) > 0 {
 		c.Pick.ByTask = map[string]string{}
 	}
 	for _, p := range s.Pins {
+		what := ruleName(p.Skill, p.Size)
+		if !slices.Contains(skills.Order, p.Skill) {
+			return c, nil, fmt.Errorf("Model choice: pick a task for %s", what)
+		}
+		if p.Size != "" && !slices.Contains(skills.SizeOrder, p.Size) {
+			return c, nil, fmt.Errorf("Model choice for %s: pick small, medium or large, or any size", what)
+		}
+		if _, dup := c.Pick.ByTask[key(p.Skill, p.Size)]; dup {
+			return c, nil, fmt.Errorf("Model choice for %s is set twice.", what)
+		}
+		if !slices.Contains(models, p.Model) {
+			return c, nil, fmt.Errorf("The rule for %s uses %s, which isn't in your models anymore. Pick another model or remove the rule.", what, p.Model)
+		}
 		c.Pick.ByTask[key(p.Skill, p.Size)] = p.Model
 	}
 	if len(s.Limits) > 0 {
 		c.Speed.ByTask = map[string]any{}
 	}
 	for _, l := range s.Limits {
+		what := ruleName(l.Task, l.Size)
+		if !slices.Contains(config.Tasks(), l.Task) {
+			return c, nil, fmt.Errorf("Speed limit: pick a task for %s", what)
+		}
+		isSkill := slices.Contains(skills.Order, l.Task)
+		if l.Size != "" && isSkill && !slices.Contains(skills.SizeOrder, l.Size) {
+			return c, nil, fmt.Errorf("Speed limit for %s: skill checks are small, medium or large", what)
+		}
+		if l.Size != "" && !isSkill && !slices.Contains(jobtype.Tiers, l.Size) {
+			return c, nil, fmt.Errorf("Speed limit for %s: replays are small or large", what)
+		}
+		if _, dup := c.Speed.ByTask[key(l.Task, l.Size)]; dup {
+			return c, nil, fmt.Errorf("Speed limit for %s is set twice.", what)
+		}
 		switch l.Rule {
 		case "always", "never":
 			c.Speed.ByTask[key(l.Task, l.Size)] = l.Rule
 		default:
 			if l.Percent < 0 {
-				return c, nil, fmt.Errorf("Speed limit for %s: use 0 or more percent", key(l.Task, l.Size))
+				return c, nil, fmt.Errorf("Speed limit for %s: use 0 or more percent", what)
 			}
 			c.Speed.ByTask[key(l.Task, l.Size)] = l.Percent
 		}
@@ -156,9 +196,19 @@ func (s Settings) Config() (config.Config, []byte, error) {
 	}
 	parsed, err := config.Parse(b)
 	if err != nil {
-		return c, b, err
+		return c, b, fmt.Errorf("These settings can't be saved: %v", err)
 	}
 	return parsed, b, nil
+}
+
+// ruleName is a task and size in plain words: "Find a definition (any size)".
+func ruleName(task, size string) string {
+	isSkill := slices.Contains(skills.Order, task)
+	words := "any size"
+	if size != "" {
+		words = sizeWords(isSkill, size)
+	}
+	return taskName(taskType(task)) + " (" + words + ")"
 }
 
 func key(task, size string) string {
@@ -186,7 +236,7 @@ type Choice struct {
 func options() Options {
 	o := Options{SkillSizes: skills.SizeOrder, ReplaySizes: []string{"small", "large"}, Themes: config.Themes}
 	for _, s := range skills.Order {
-		o.Skills = append(o.Skills, Choice{s, skillNames[s]})
+		o.Skills = append(o.Skills, Choice{s, skills.Names[s]})
 	}
 	for _, t := range config.Tasks() {
 		o.Tasks = append(o.Tasks, Choice{t, taskName(taskType(t))})
@@ -204,31 +254,31 @@ func taskType(task string) string {
 	return task
 }
 
-// settingsAPI serves the settings form. Writes need the token this run of
-// htd ui made, which only this page can read (the host check and the
-// browser's same-origin rule keep other sites from it), and must come from
-// this page's own origin.
+// settingsAPI serves the settings form. Who may call it is decided before
+// it's reached (the host and the run's key); writes also have to be JSON from
+// this page's own origin, and say which version of config.toml they were
+// made from, so an edit made somewhere else in the meantime isn't lost.
 type settingsAPI struct {
-	dir   string
-	token string
-	mu    sync.Mutex
+	dir string
+	mu  sync.Mutex
 }
 
-func newSettingsAPI(dir string) *settingsAPI {
-	b := make([]byte, 24)
-	rand.Read(b)
-	return &settingsAPI{dir: dir, token: hex.EncodeToString(b)}
-}
+func newSettingsAPI(dir string) *settingsAPI { return &settingsAPI{dir: dir} }
 
 type settingsReply struct {
 	Settings *Settings `json:"settings,omitempty"`
 	Path     string    `json:"path,omitempty"`
-	Token    string    `json:"token,omitempty"`
 	Options  *Options  `json:"options,omitempty"`
 	TOML     string    `json:"toml,omitempty"`
 	Error    string    `json:"error,omitempty"`
 	Saved    bool      `json:"saved,omitempty"`
+	// Version identifies the config.toml the form was made from ("" when
+	// there's no file yet); the page sends it back, as X-HTD-Version, to save.
+	Version *string `json:"version,omitempty"`
 }
+
+// VersionHeader carries the version a save was made from.
+const VersionHeader = "X-HTD-Version"
 
 func reply(w http.ResponseWriter, code int, r settingsReply) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -237,14 +287,25 @@ func reply(w http.ResponseWriter, code int, r settingsReply) {
 	json.NewEncoder(w).Encode(r)
 }
 
+// version is a fingerprint of config.toml's bytes, "" when there's no file.
+func (a *settingsAPI) version() string {
+	b, err := os.ReadFile(config.Path(a.dir))
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
 func (a *settingsAPI) get(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	o := options()
-	out := settingsReply{Path: tildePath(config.Path(a.dir)), Token: a.token, Options: &o}
+	v := a.version()
+	out := settingsReply{Path: tildePath(config.Path(a.dir)), Options: &o, Version: &v}
 	c, err := config.Load(a.dir)
 	if err != nil {
-		out.Error = "Your config.toml has a problem (" + err.Error() + "). The form shows the defaults; saving replaces the file."
+		out.Error = BrokenConfigWords(err)
 		c = config.Default()
 	}
 	s := FromConfig(c)
@@ -253,6 +314,20 @@ func (a *settingsAPI) get(w http.ResponseWriter, r *http.Request) {
 		out.TOML = string(b)
 	}
 	reply(w, http.StatusOK, out)
+}
+
+// BrokenConfigWords is what the form says when config.toml can't be read.
+func BrokenConfigWords(err error) string {
+	return "Your config.toml has a problem: " + ConfigProblem(err) + ". The safest fix is to correct that line in the file. Saving this form replaces the whole file with what's shown here, which is the defaults, not your models."
+}
+
+// ConfigProblem is a config.Load error without the file's path (the page
+// already says which file) or a closing period, ready to go in a sentence.
+func ConfigProblem(err error) string {
+	if inner := errors.Unwrap(err); inner != nil {
+		err = inner
+	}
+	return strings.TrimRight(strings.TrimSpace(err.Error()), ".")
 }
 
 // tildePath shows a path in the home folder as ~/...
@@ -266,7 +341,7 @@ func tildePath(p string) string {
 // write previews the file the form would save, or saves it.
 func (a *settingsAPI) write(save bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if err := a.allowed(r); err != nil {
+		if err := allowed(r); err != nil {
 			reply(w, http.StatusForbidden, settingsReply{Error: err.Error()})
 			return
 		}
@@ -286,20 +361,24 @@ func (a *settingsAPI) write(save bool) http.HandlerFunc {
 		}
 		a.mu.Lock()
 		defer a.mu.Unlock()
+		have := a.version()
+		sent, sentAny := r.Header[http.CanonicalHeaderKey(VersionHeader)]
+		if (sentAny && sent[0] != have) || (!sentAny && have != "") {
+			reply(w, http.StatusConflict, settingsReply{Error: "config.toml changed since you opened this page. Reload your settings to see the change, then make your edit again."})
+			return
+		}
 		if err := config.Save(a.dir, c); err != nil {
 			reply(w, http.StatusInternalServerError, settingsReply{Error: "couldn't save: " + err.Error()})
 			return
 		}
-		reply(w, http.StatusOK, settingsReply{TOML: string(b), Saved: true})
+		v := a.version()
+		reply(w, http.StatusOK, settingsReply{TOML: string(b), Saved: true, Version: &v})
 	}
 }
 
-// allowed checks a write came from this page: its token, sent as JSON (a
-// form post from another site can't set either), from this page's origin.
-func (a *settingsAPI) allowed(r *http.Request) error {
-	if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-HTD-Token")), []byte(a.token)) != 1 {
-		return errors.New("this page is out of date: reload it and try again")
-	}
+// allowed checks a write came from this page: sent as JSON (a form post from
+// another site can't do that) from this page's own origin.
+func allowed(r *http.Request) error {
 	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 		return errors.New("settings must be sent as JSON")
 	}

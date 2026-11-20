@@ -152,14 +152,14 @@ htd checks the whole file every time it reads it. A misspelled setting, an unkno
 
 `bench` and `replay` also take `--url`, `--model` and `--allow-remote` to run one model instead of every configured one (`--max` applies to each model). Every command takes `--help`.
 
-**What's stored, all in `~/.htd`:** `config.toml`, `runs.jsonl` (one line per graded replay or check), `answers/` (each answer next to the expected one, for review by hand), `delegations.jsonl` (each `ask_local` call: skill, size, model, outcome; no file contents; turn it off with `[privacy] track_handoffs = false`), `cache/` (Claude's typical times, medians only; which models think before answering; temporary repo copies during replays), `snapshots/` (uncommitted files saved as subagents start, when snapshots are on; kept 60 days), and an empty `model.lock` that lets htd commands take turns. See [PRIVACY.md](PRIVACY.md).
+**What's stored, all in `~/.htd`:** `config.toml`, `runs.jsonl` (one line per graded replay or check), `answers/` (each answer next to the expected one, for review by hand), `delegations.jsonl` (each `ask_local` call: skill, size, model, outcome and why Claude kept it; no file contents; turn it off with `[privacy] track_handoffs = false`), `cache/` (Claude's typical times, medians only; which models think before answering; temporary repo copies during replays), `snapshots/` (uncommitted files saved as subagents start, when snapshots are on; kept 60 days), and an empty `model.lock` that lets htd commands take turns. See [PRIVACY.md](PRIVACY.md).
 
 ## Reading the card
 
-- **proven**: passed often enough, with enough checks, that the result isn't luck (a 95% lower bound at or above the bar);
-- **too slow**: proven, but slower than your speed limit allows, so Claude keeps it (`--details` shows how much slower);
-- **learning** ("not proven yet"): not enough evidence either way yet;
-- **not good enough**: stopped early, because it clearly can't reach the bar;
+- **Goes local**: proven, meaning it passed often enough, with enough checks, that the result isn't luck (a 95% lower bound at or above the bar), and it's fast enough;
+- **Stays with Claude**: proven, but slower than your speed limit allows (or your setting says never), so Claude keeps it (`--details` shows how much slower);
+- **Learning**: not enough evidence either way yet;
+- **Not good enough**: stopped early, because it clearly can't reach the bar;
 - **hint**: 200 jobs without proof.
 
 The `ask_local` line counts tasks answered locally and the file contents kept out of Claude's context, with what that's worth at your Claude model's API prices: one cache write plus a cache read on each later turn the file would have ridden along for (typical for your transcripts). On a Pro or Max plan that's usage headroom, not dollars.
@@ -176,13 +176,13 @@ htd ui
 
 `htd ui` opens a page in your browser, on this computer only, with three tabs:
 
-- **Savings:** what `ask_local` handed to your local models: tasks, tokens kept out of Claude's context and what they were worth, by model and by task, and the latest handoffs. Two monthly estimates: **at your current pace** (your last 30 days of handoffs) and **room to grow**, a ceiling that counts the files Claude read in your last 30 days of transcripts at sizes your models have proven ([screenshot](docs/scorecard-savings.png)).
-- **Models:** everything `htd card` knows, judged the same way. A table per model of each skill check by file size, marked **Goes local** (accurate and fast enough), **Stays with Claude** (accurate, but too slow for your speed limit), **Learning** (with the check-in it's heading for) or **Not good enough**. Replayed jobs fold away underneath. Click a result for its history: the share right after each check, the proof line against the bar, and its speed next to Claude's. An over-time chart shows the task sizes that go local by the end of each day.
-- **Settings:** a form for everything in `~/.htd/config.toml`: your local models, which model takes a task, speed limits, privacy and appearance ([screenshot](docs/scorecard-settings.png)). It shows the file it will write before you save, checks it the same way htd does when it reads it, and asks before allowing a server off your computer and network. Saving rewrites the file, so comments you added by hand aren't kept.
+- **Savings:** what `ask_local` handed to your local models: tasks, about how many tokens that kept out of Claude's context and what they were worth, by model and by task, why Claude kept the rest, and the latest handoffs. Two monthly estimates: **at your current pace** (your last 30 days of handoffs) and **room to grow**, a ceiling that counts the files Claude read in your last 30 days of transcripts at sizes your models have proven ([screenshot](docs/scorecard-savings.png)).
+- **Models:** everything `htd card` knows, judged the same way and in the same words. A table per model of each skill check by file size, marked **Goes local** (accurate and fast enough), **Stays with Claude** (accurate, but too slow for your speed limit, or your setting), **Learning** (with the check-in it's heading for) or **Not good enough**. Replayed jobs fold away underneath. Click a result for its history: the share right after each check, the proof line against the bar, and its speed next to Claude's. An over-time chart shows the task sizes that go local by the end of each day.
+- **Settings:** a form for everything in `~/.htd/config.toml`: your local models, which model takes a task, speed limits, privacy and appearance ([screenshot](docs/scorecard-settings.png)). It shows the file it will write before you save, checks it the same way htd does when it reads it, and asks before allowing a server off your computer and network. Saving rewrites the file, so comments you added by hand aren't kept. If the file changed since you opened the page (a hand edit, or your AI assistant), it asks you to reload instead of overwriting that change. Changes reach `ask_local` on its next call, including removing a model.
 
-It follows your computer's light or dark setting ([dark mode](docs/scorecard-dark.png)) unless you pick one under Settings. It updates every 10 seconds, so you can leave it open while `htd bench` or `htd replay` runs.
+It follows your computer's light or dark setting ([dark mode](docs/scorecard-dark.png)) unless you pick one under Settings. It updates every 10 seconds, so you can leave it open while `htd bench` or `htd replay` runs. If `config.toml` has a mistake, the page still opens and says which line.
 
-The page is served by `htd` itself on `127.0.0.1` (any free port, or `--port`), answers only requests addressed to this computer, and loads nothing from the internet. The only thing it can change is `config.toml`, and only from the page itself. `--no-open` prints the address instead of opening your browser. Ctrl-C stops it.
+The page is served by `htd` itself on `127.0.0.1` (any free port, or `--port`), answers only requests addressed to this computer, and loads nothing from the internet. The address it opens carries a one-time key, so only the browser you opened it in can use the page. The only thing it can change is `config.toml`, and only from the page itself. `--no-open` prints the address instead of opening your browser. Ctrl-C stops it. It works in current Chrome, Edge, Firefox and Safari (2021 or newer).
 
 ## Good to know
 

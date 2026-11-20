@@ -11,16 +11,21 @@ import (
 	"testing"
 )
 
+const testKey = "0123456789abcdef"
+
 func get(h http.Handler, method, path, host string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, nil)
 	req.Host = host
+	if strings.HasPrefix(path, "/api/") {
+		req.AddCookie(&http.Cookie{Name: CookieName, Value: testKey})
+	}
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	return w
 }
 
 func TestHandler(t *testing.T) {
-	h := Handler(func() (Report, error) { return Build(Input{}), nil }, t.TempDir())
+	h := Handler(func() (Report, error) { return Build(Input{}), nil }, t.TempDir(), testKey)
 
 	w := get(h, "GET", "/", "127.0.0.1:8765")
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "What your local models have earned") {
@@ -45,7 +50,7 @@ func TestHandler(t *testing.T) {
 // Another site can't read the page by pointing its own name at 127.0.0.1,
 // and nothing can be changed through it.
 func TestHandlerGuards(t *testing.T) {
-	h := Handler(func() (Report, error) { return Report{}, nil }, t.TempDir())
+	h := Handler(func() (Report, error) { return Report{}, nil }, t.TempDir(), testKey)
 	for _, host := range []string{"evil.example", "evil.example:8765", "127.0.0.1.evil.example", "192.168.1.5:8765", ""} {
 		if w := get(h, "GET", "/api/report", host); w.Code != http.StatusForbidden {
 			t.Errorf("host %q: %d", host, w.Code)
@@ -59,7 +64,7 @@ func TestHandlerGuards(t *testing.T) {
 }
 
 func TestHandlerLoadError(t *testing.T) {
-	h := Handler(func() (Report, error) { return Report{}, errors.New("unknown setting \"spede\"") }, t.TempDir())
+	h := Handler(func() (Report, error) { return Report{}, errors.New("unknown setting \"spede\"") }, t.TempDir(), testKey)
 	w := get(h, "GET", "/api/report", "127.0.0.1:1")
 	var body map[string]string
 	if w.Code != 500 || json.Unmarshal(w.Body.Bytes(), &body) != nil || body["error"] != `unknown setting "spede"` {
@@ -95,4 +100,68 @@ func TestNothingLoadsFromOutside(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+// The page is served to anyone on this computer, but its data needs the key
+// htd ui printed: ?k= is swapped for a cookie, and /api/ needs the cookie.
+func TestKeyAndCookie(t *testing.T) {
+	h := Handler(func() (Report, error) { return Build(Input{}), nil }, t.TempDir(), testKey)
+	api := func(path, cookie string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", path, nil)
+		req.Host = "127.0.0.1:1"
+		if cookie != "" {
+			req.AddCookie(&http.Cookie{Name: CookieName, Value: cookie})
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w
+	}
+	for _, path := range []string{"/api/report", "/api/settings"} {
+		for _, cookie := range []string{"", "wrong", testKey + "x"} {
+			w := api(path, cookie)
+			var body map[string]string
+			if w.Code != http.StatusUnauthorized || json.Unmarshal(w.Body.Bytes(), &body) != nil || body["error"] == "" {
+				t.Errorf("%s with cookie %q: %d %s", path, cookie, w.Code, w.Body.String())
+			}
+		}
+		if w := api(path, testKey); w.Code != 200 {
+			t.Errorf("%s with the key: %d", path, w.Code)
+		}
+	}
+
+	// The right key becomes a cookie and leaves the address bar.
+	w := get(h, "GET", "/?k="+testKey, "127.0.0.1:1")
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/" {
+		t.Fatalf("key in the address: %d, goes to %q", w.Code, w.Header().Get("Location"))
+	}
+	cs := w.Result().Cookies()
+	if len(cs) != 1 || cs[0].Name != CookieName || cs[0].Value != testKey || !cs[0].HttpOnly || cs[0].SameSite != http.SameSiteStrictMode || cs[0].Path != "/" {
+		t.Errorf("cookie: %+v", cs)
+	}
+
+	// A wrong key sets nothing; the page still loads and its first call says the link expired.
+	w = get(h, "GET", "/?k=nope", "127.0.0.1:1")
+	if len(w.Result().Cookies()) != 0 || w.Code != 200 {
+		t.Errorf("wrong key: %d, cookies %v", w.Code, w.Result().Cookies())
+	}
+	// The page and its files need no key.
+	if w := get(h, "GET", "/", "127.0.0.1:1"); w.Code != 200 {
+		t.Errorf("page without a key: %d", w.Code)
+	}
+	if w := get(h, "GET", "/app.js", "127.0.0.1:1"); w.Code != 200 {
+		t.Errorf("script without a key: %d", w.Code)
+	}
+	// A run without a key at all turns everything away.
+	none := Handler(func() (Report, error) { return Report{}, nil }, t.TempDir(), "")
+	req := httptest.NewRequest("GET", "/api/report", nil)
+	req.Host = "127.0.0.1:1"
+	req.AddCookie(&http.Cookie{Name: CookieName, Value: ""})
+	rec := httptest.NewRecorder()
+	none.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("empty key: %d", rec.Code)
+	}
+	if w := get(none, "GET", "/?k=", "127.0.0.1:1"); len(w.Result().Cookies()) != 0 {
+		t.Error("an empty key must not set a cookie")
+	}
 }

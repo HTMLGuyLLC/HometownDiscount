@@ -150,18 +150,37 @@ func Parse(b []byte) (Config, error) {
 	return c, nil
 }
 
-// Encode is the config file's contents, as Save writes them.
+// Encode is the config file's contents, as Save writes them. [ui] and
+// [privacy] are left out while they're the defaults, so a file that never
+// changed them still loads in older versions of htd, which don't know them.
 func Encode(c Config) ([]byte, error) {
+	f := struct {
+		Local   []Local  `toml:"local"`
+		Pick    Pick     `toml:"pick"`
+		Speed   Speed    `toml:"speed"`
+		UI      *UI      `toml:"ui,omitempty"`
+		Privacy *Privacy `toml:"privacy,omitempty"`
+	}{Local: c.Local, Pick: c.Pick, Speed: c.Speed}
+	def := Default()
+	if c.UI != def.UI {
+		f.UI = &c.UI
+	}
+	if c.Privacy != def.Privacy {
+		f.Privacy = &c.Privacy
+	}
 	var buf bytes.Buffer
 	buf.WriteString("# Hometown Discount settings. Every default costs $0 extra.\n\n")
-	if err := toml.NewEncoder(&buf).Encode(c); err != nil {
+	if err := toml.NewEncoder(&buf).Encode(f); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
 }
 
-// Save writes the config to dir, readable only by the user.
-func Save(dir string, c Config) error {
+// Save writes the config to dir, readable only by the user. It writes a
+// temporary file in the same folder and renames it over the old one, so a
+// crash leaves the old file whole. If config.toml is a link, the file it
+// points to is the one replaced, and the link stays.
+func Save(dir string, c Config) (err error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
@@ -169,11 +188,33 @@ func Save(dir string, c Config) error {
 	if err != nil {
 		return err
 	}
-	tmp := Path(dir) + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	path := Path(dir)
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".config.toml.*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, Path(dir))
+	defer func() {
+		if err != nil {
+			f.Close()
+			os.Remove(f.Name())
+		}
+	}()
+	if _, err = f.Write(b); err != nil {
+		return err
+	}
+	if err = f.Sync(); err != nil {
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	if err = os.Chmod(f.Name(), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }
 
 // Tasks are the names [speed.by_task] accepts: skill checks and the job

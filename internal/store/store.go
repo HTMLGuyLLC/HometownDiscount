@@ -93,14 +93,22 @@ func (r Rung) Label() string {
 		s += " · " + commas(r.Context) + " ctx"
 	}
 	s += " · " + r.Loop
-	switch r.Effort {
-	case "":
-	case ThinkingOff:
-		s += " · thinking off"
-	default:
-		s += " · effort " + r.Effort
+	if e := r.EffortWords(); e != "" {
+		s += " · " + e
 	}
 	return s
+}
+
+// EffortWords says how the model is asked to think, in plain words: "" for
+// the server's default, "thinking off", or "effort high".
+func (r Rung) EffortWords() string {
+	switch r.Effort {
+	case "":
+		return ""
+	case ThinkingOff:
+		return "thinking off"
+	}
+	return "effort " + r.Effort
 }
 
 // Store is the results file.

@@ -16,7 +16,7 @@ Hometown Discount runs on your computer and talks only to the model servers you 
 
 - **To your local model servers only:** the tasks from your past jobs, the code the model asks to see during a replay, skill-check prompts built from your files, and the files Claude passes to `ask_local`.
 - **Nowhere else.** Nothing is sent to Anthropic, to the project's author or to any third party. A model server that isn't on your machine or local network is refused unless you explicitly allow it, because your code would go there.
-- **The scorecard page** (`htd ui`) is served by `htd` on `127.0.0.1` while you have it open: only your own computer can reach it, it shows your results (no file contents or answers), loads nothing from the internet, and the only thing it can change is `~/.htd/config.toml`, from its own Settings form. The Savings tab's "room to grow" estimate reads your transcripts on this computer, the same way `htd map` does.
+- **The scorecard page** (`htd ui`) is served by `htd` on `127.0.0.1` while `htd ui` is running (Ctrl-C stops it): only the browser it opened can use it, it shows your results (no file contents or answers), loads nothing from the internet, and the only thing it can change is `~/.htd/config.toml`, from its own Settings form. The Savings tab's "room to grow" estimate reads your transcripts on this computer, the same way `htd map` does.
 
 ## What it stores
 
@@ -27,7 +27,7 @@ Everything lives in `~/.htd` (or `$HTD_HOME`), readable only by your user accoun
 | `config.toml` | Your local models' URLs and names, and your settings |
 | `runs.jsonl` | One line per graded replay or skill check: ids, job type, pass/fail, timing. No prompts; a failed replay's notes can name file paths or identifiers it got wrong. |
 | `answers/` | Each answer next to the expected one (from Claude, or computed for skill checks), so you can check the grading by hand. These can contain code and text from your projects. |
-| `delegations.jsonl` | One line per `ask_local` call: skill, size, the local model that answered, outcome, timing. No file contents. Off with `[privacy] track_handoffs = false` (or in `htd ui` → Settings); `htd forget` deletes it. |
+| `delegations.jsonl` | One line per `ask_local` call: skill, size, the local model that answered, outcome (and why Claude kept it, such as "not proven"), timing. No file contents. Off with `[privacy] track_handoffs = false` (or in `htd ui` → Settings); `htd forget` deletes it. |
 | `cache/` | Temporary repo copies during a replay, deleted when it ends; `claude-speed.json`, Claude's median answer times by file size (numbers only); `thinking.json`, whether each model setup thinks before answering (true/false, checked again weekly) |
 | `model.lock`, `model.want` | Empty files htd commands use to take turns on the model |
 | `snapshots/` | Only when snapshots are on (`htd hooks on`, offered by `htd setup`): your repos' uncommitted text files, saved each time Claude starts a subagent so a replay can rebuild what the job saw. Files that look like secrets (the same list as below), files git ignores, binary files and files over 1 MB are left out. Kept 60 days. |

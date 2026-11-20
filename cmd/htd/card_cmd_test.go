@@ -61,7 +61,7 @@ func TestCardEmpty(t *testing.T) {
 }
 
 // A job type that passed enough replays, faster than the original, shows up
-// under "Can take now" with its setup named; --details has every number.
+// under "Goes local" with its setup named; --details has every number.
 func TestCardProvenReplays(t *testing.T) {
 	home, _ := hermetic(t)
 	addRuns(t, home, findRuns(30, 30, 10, 100)...)
@@ -71,7 +71,7 @@ func TestCardProvenReplays(t *testing.T) {
 	for _, want := range []string{
 		"Hometown Discount · what your local models have earned",
 		"tiny-q4 · q4 · builtin", // the setup, in words
-		"Can take now:",
+		"Goes local:",
 		"find jobs vs Opus 5.5 (small)",
 		"Every number behind this: `htd card --details`.",
 	} {
@@ -79,7 +79,7 @@ func TestCardProvenReplays(t *testing.T) {
 			t.Errorf("headline lacks %q:\n%s", want, out)
 		}
 	}
-	for _, not := range []string{"Too slow:", "Not proven yet:", "Not good enough:"} {
+	for _, not := range []string{"Stays with Claude:", "Learning:", "Not good enough:"} {
 		if strings.Contains(out, not) {
 			t.Errorf("headline has %q:\n%s", not, out)
 		}
@@ -114,7 +114,7 @@ func TestCardProvenButTooSlow(t *testing.T) {
 
 	out := cardOut(t)
 
-	if !strings.Contains(out, "Too slow:") || !strings.Contains(out, "(vs Claude: limit +20%)") || !strings.Contains(out, "nothing proven yet") {
+	if !strings.Contains(out, "Stays with Claude:") || !strings.Contains(out, "(vs Claude: limit +20%)") || !strings.Contains(out, "nothing proven yet") {
 		t.Errorf("a slow model keeps proven work on Claude:\n%s", out)
 	}
 	details := cardOut(t, "--details")
@@ -154,7 +154,7 @@ func TestCardNotGoodEnoughAndLearning(t *testing.T) {
 	if !strings.Contains(out, "Not good enough:") || !strings.Contains(out, "find jobs vs Opus 5.5 (small, 0 of 5 passed)") {
 		t.Errorf("want find stopped early:\n%s", out)
 	}
-	if !strings.Contains(out, "Not proven yet:") || !strings.Contains(out, "extract jobs vs Opus 5.5 (small, 3 of 4 passed)") {
+	if !strings.Contains(out, "Learning:") || !strings.Contains(out, "extract jobs vs Opus 5.5 (small, 3 of 4 passed)") {
 		t.Errorf("want extract still learning:\n%s", out)
 	}
 	if !strings.Contains(out, "To prove more: run `htd bench` again") {

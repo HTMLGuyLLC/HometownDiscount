@@ -60,24 +60,33 @@ func (r Row) Label() string {
 	return "learning"
 }
 
+// GroupKey is what Build groups runs by: setup, type, size and, for
+// replays, the Claude model they're graded against.
+type GroupKey struct{ Rung, Type, Tier, Ref string }
+
+// KeyOf is the group a run belongs to.
+func KeyOf(r store.Run) GroupKey {
+	k := GroupKey{r.Rung, r.Type, r.Tier, ""}
+	if !strings.HasPrefix(r.Type, skills.TypePrefix) {
+		k.Ref = pricing.Normalize(r.Reference)
+	}
+	return k
+}
+
 // Build groups runs by rung and job type and evaluates each group.
 func Build(runs []store.Run, labels map[string]string) []Row {
-	type key struct{ rung, typ, tier, ref string }
-	groups := map[key][]store.Run{}
+	groups := map[GroupKey][]store.Run{}
 	for _, r := range runs {
-		k := key{r.Rung, r.Type, r.Tier, ""}
-		if !strings.HasPrefix(r.Type, skills.TypePrefix) {
-			k.ref = pricing.Normalize(r.Reference)
-		}
+		k := KeyOf(r)
 		groups[k] = append(groups[k], r)
 	}
 	var rows []Row
 	for k, rs := range groups {
-		row := Row{Rung: k.rung, Type: k.typ, Tier: k.tier, Reference: k.ref, Bar: ladder.Bar(ladder.DefaultST, ladder.DefaultMargin), BarSource: "default"}
-		if strings.HasPrefix(k.typ, skills.TypePrefix) {
+		row := Row{Rung: k.Rung, Type: k.Type, Tier: k.Tier, Reference: k.Ref, Bar: ladder.Bar(ladder.DefaultST, ladder.DefaultMargin), BarSource: "default"}
+		if strings.HasPrefix(k.Type, skills.TypePrefix) {
 			row.Bar, row.BarSource = skills.Bar, "fixed"
 		}
-		if l, ok := labels[k.rung]; ok {
+		if l, ok := labels[k.Rung]; ok {
 			row.Rung = l
 		}
 		var outcomes []bool
@@ -167,9 +176,9 @@ func tierOrder(t string) int {
 	return 3
 }
 
-// Headline writes the short version: per setup, what the model can take now,
-// what it has proven but is too slow for, what it hasn't proven yet and what
-// it isn't good enough for.
+// Headline writes the short version: per setup, what goes local, what stays
+// with Claude (proven, but too slow or set that way), what is still being
+// learned and what the model isn't good enough for.
 func Headline(w io.Writer, rows []Row) {
 	fmt.Fprintln(w, "Hometown Discount · what your local models have earned")
 	fmt.Fprintln(w)
@@ -223,15 +232,15 @@ func Headline(w io.Writer, rows []Row) {
 		}
 		line := func(label string, items []string) {
 			if len(items) > 0 {
-				fmt.Fprintf(w, "  %-16s %s\n", label, strings.Join(items, " · "))
+				fmt.Fprintf(w, "  %-18s %s\n", label, strings.Join(items, " · "))
 			}
 		}
 		if len(can) == 0 {
 			can = []string{"nothing proven yet"}
 		}
-		line("Can take now:", can)
-		line("Too slow:", slowItems(slowOrder, slowest))
-		line("Not proven yet:", learning)
+		line("Goes local:", can)
+		line("Stays with Claude:", slowItems(slowOrder, slowest))
+		line("Learning:", learning)
 		line("Not good enough:", cannot)
 		fmt.Fprintln(w)
 		anyLearning = anyLearning || len(learning) > 0
@@ -243,13 +252,16 @@ func Headline(w io.Writer, rows []Row) {
 }
 
 // slowItems lists, per type, the sizes the local model has proven but Claude
-// keeps for speed, e.g. "lookup over 200 lines". The numbers are in --details;
+// keeps (for speed, or because you set it so), e.g. "lookup over 200 lines". The numbers are in --details;
 // the limit is named once when every item shares it.
 func slowItems(order []string, slowest map[string]Row) []string {
 	if len(order) == 0 {
 		return nil
 	}
-	over := map[string]string{"medium": " over 200 lines", "large": " over 1,000 lines"}
+	over := map[string]string{
+		skills.Medium: " over " + skills.Commas(skills.SmallLines) + " lines",
+		skills.Large:  " over " + skills.Commas(skills.MediumLines) + " lines",
+	}
 	limits, against := map[string]bool{}, map[string]bool{}
 	var items []string
 	for _, id := range order {
@@ -304,13 +316,11 @@ func name(typ string) string {
 
 func sizeWords(r Row) string {
 	if strings.HasPrefix(r.Type, skills.TypePrefix) {
-		switch r.Tier {
-		case "small":
-			return "files up to 200 lines"
-		case "medium":
-			return "up to 1,000 lines"
-		case "large":
-			return "up to 4,000 lines"
+		if r.Tier == skills.Small {
+			return "files " + skills.SizeWords(r.Tier)
+		}
+		if skills.SizeLines(r.Tier) > 0 {
+			return skills.SizeWords(r.Tier)
 		}
 	}
 	switch r.Tier {

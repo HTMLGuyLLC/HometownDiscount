@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -190,5 +191,87 @@ func TestEncodeParse(t *testing.T) {
 	}
 	if _, err := Parse([]byte("[speed.by_task]\nlookup = \"sometimes\"\n")); err == nil {
 		t.Error("a bad by_task value should fail to parse")
+	}
+}
+
+// [ui] and [privacy] are written only when changed, so a file that never
+// touched them still loads in an older htd.
+func TestEncodeLeavesOutDefaults(t *testing.T) {
+	b, _ := Encode(Default())
+	if strings.Contains(string(b), "[ui]") || strings.Contains(string(b), "[privacy]") {
+		t.Errorf("defaults written:\n%s", b)
+	}
+	c := Default()
+	c.UI.Theme = "dark"
+	b, _ = Encode(c)
+	if !strings.Contains(string(b), "[ui]") || strings.Contains(string(b), "[privacy]") {
+		t.Errorf("only [ui] expected:\n%s", b)
+	}
+	c = Default()
+	c.Privacy.TrackHandoffs = false
+	b, _ = Encode(c)
+	got, err := Parse(b)
+	if err != nil || got.Privacy.TrackHandoffs || !strings.Contains(string(b), "[privacy]") {
+		t.Errorf("track_handoffs = false: %+v, %v\n%s", got.Privacy, err, b)
+	}
+}
+
+// Save leaves no temporary file, keeps mode 0600, and when config.toml is a
+// link writes the file it points to.
+func TestSaveSafely(t *testing.T) {
+	dir := t.TempDir()
+	if err := Save(dir, Default()); err != nil {
+		t.Fatal(err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Errorf("want only config.toml, got %v", entries)
+	}
+
+	other := t.TempDir()
+	target := filepath.Join(other, "real.toml")
+	os.WriteFile(target, []byte("# mine\n"), 0o644)
+	linked := t.TempDir()
+	if err := os.Symlink(target, Path(linked)); err != nil {
+		t.Skip("no symlinks here")
+	}
+	c := Default()
+	c.UI.Theme = "light"
+	if err := Save(linked, c); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Lstat(Path(linked)); err != nil || st.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("the link should stay: %v, %v", st, err)
+	}
+	if got, err := Load(linked); err != nil || got.UI.Theme != "light" {
+		t.Errorf("saved through the link: %+v, %v", got.UI, err)
+	}
+	if b, _ := os.ReadFile(target); !strings.Contains(string(b), "light") {
+		t.Errorf("target not written: %s", b)
+	}
+	if entries, _ := os.ReadDir(other); len(entries) != 1 {
+		t.Errorf("temp file left beside the target: %v", entries)
+	}
+}
+
+// A save that can't finish leaves the old file alone and no temp file.
+func TestSaveFailureCleansUp(t *testing.T) {
+	dir := t.TempDir()
+	Save(dir, Default())
+	before, _ := os.ReadFile(Path(dir))
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Skip()
+	}
+	defer os.Chmod(dir, 0o700)
+	if os.Geteuid() == 0 {
+		t.Skip("root can write anywhere")
+	}
+	c := Default()
+	c.UI.Theme = "dark"
+	if err := Save(dir, c); err == nil {
+		t.Fatal("want an error from a read-only folder")
+	}
+	after, _ := os.ReadFile(Path(dir))
+	if string(before) != string(after) {
+		t.Error("the old file changed")
 	}
 }

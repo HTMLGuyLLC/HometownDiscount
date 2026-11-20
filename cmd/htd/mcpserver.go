@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -48,6 +49,7 @@ func runMCP(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	home, _ := os.UserHomeDir()
 	switch {
 	case unsafeRoot(root, home) != "":
+		h.unsafe = true
 		h.h.Setup = fmt.Errorf("htd mcp started in %s, %s; start Claude in a project folder so only that project's files can be read", root, unsafeRoot(root, home))
 	case len(cfg.Local) == 0:
 		h.h.Setup = fmt.Errorf("no local model configured; run `htd setup`")
@@ -130,8 +132,20 @@ func (r *refreshing) connect() {
 	r.h.Label = strings.Join(labels, " or ")
 }
 
-// refreshing re-reads the evidence, the speed and pick settings and Claude's times
-// before each list and call, so skills proven by a `htd bench` run, or a
+// reconnect starts over with the models in r.cfg.Local, dropping every
+// connection to the ones that were there before.
+func (r *refreshing) reconnect() {
+	if len(r.cfg.Local) > 0 {
+		r.connect()
+		return
+	}
+	r.tried, r.rungIDs, r.missing = time.Time{}, nil, 0
+	r.h.Models, r.h.Gate, r.h.Label = nil, nil, "no local model set up"
+	r.h.Setup = fmt.Errorf("no local model configured; run `htd setup`")
+}
+
+// refreshing re-reads the evidence, the models, the speed and pick settings and
+// Claude's times before each list and call, so skills proven by a `htd bench` run, or a
 // changed speed limit, apply without restarting the server.
 type refreshing struct {
 	listed  string // the proven skills the client last saw
@@ -141,15 +155,23 @@ type refreshing struct {
 	rungIDs []string // every configured model that answered, as it runs by default and with thinking off
 	missing int      // configured models that didn't answer
 	tried   time.Time
+	unsafe  bool // started somewhere ask_local won't serve files from: never connects
 	h       *delegate.Handler
 }
 
 func (r *refreshing) refresh() {
+	if c, err := config.Load(r.dir); err == nil { // a bad edit keeps the last good settings
+		r.cfg.Speed, r.cfg.Pick, r.cfg.Privacy = c.Speed, c.Pick, c.Privacy
+		// A model added, removed or changed (a server address, or "allow
+		// remote" turned off) applies on the next call: code must stop
+		// going to a server the user took out.
+		if !slices.Equal(c.Local, r.cfg.Local) && !r.unsafe {
+			r.cfg.Local = c.Local
+			r.reconnect()
+		}
+	}
 	if (len(r.rungIDs) == 0 || r.missing > 0) && len(r.cfg.Local) > 0 && !r.tried.IsZero() && time.Since(r.tried) > 30*time.Second {
 		r.connect()
-	}
-	if c, err := config.Load(r.dir); err == nil {
-		r.cfg.Speed, r.cfg.Pick, r.cfg.Privacy = c.Speed, c.Pick, c.Privacy // a bad edit keeps the last good settings
 	}
 	if len(r.rungIDs) == 0 {
 		return

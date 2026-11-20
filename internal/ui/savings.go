@@ -35,7 +35,12 @@ type Savings struct {
 	ByTask     []Share   `json:"by_task"`
 	Pace       *Estimate `json:"pace,omitempty"` // per month, at the recent pace
 	Room       *Estimate `json:"room,omitempty"` // per month, the most it could be
-	RoomStatus string    `json:"room_status"`    // ready, reading (transcripts still being read) or none
+	RoomStatus string    `json:"room_status"`    // ready, reading (transcripts still being read), error or none
+	RoomError  string    `json:"room_error,omitempty"`
+	// RefusedWhy counts the refused calls by reason: unproven, slow,
+	// unreachable, too_big, context, and other for lines logged before
+	// reasons were. Only reasons that happened are listed.
+	RefusedWhy map[string]int `json:"refused_why,omitempty"`
 }
 
 // Share is one model's or one task's part of the handoffs.
@@ -65,16 +70,19 @@ func savings(in Input, rows []card.Row) Savings {
 	if _, ok := delegate.Worth(1000, in.Claude, in.Prices); ok {
 		s.WorthModel = pricing.Display(in.Claude.Model)
 	}
+	// Bytes are summed and turned into tokens once per group, the way
+	// `htd card` totals them, so the two never differ by rounding.
 	byModel, byTask := map[string]*Share{}, map[string]*Share{}
-	add := func(m map[string]*Share, name string, tokens int) {
+	bytesOf := map[*Share]int{}
+	add := func(m map[string]*Share, name string, kept int) {
 		if m[name] == nil {
 			m[name] = &Share{Name: name}
 		}
 		m[name].Tasks++
-		m[name].Tokens += tokens
+		bytesOf[m[name]] += kept
 	}
 	cutoff := in.Now.AddDate(0, 0, -paceWindow)
-	var recentTasks, recentTokens int
+	var recentTasks, keptBytes, recentBytes int
 	for _, d := range in.Delegations {
 		if !d.At.IsZero() && (s.First.IsZero() || d.At.Before(s.First)) {
 			s.First = d.At
@@ -83,27 +91,38 @@ func savings(in Input, rows []card.Row) Savings {
 		case "answered":
 		case "refused":
 			s.Refused++
+			if s.RefusedWhy == nil {
+				s.RefusedWhy = map[string]int{}
+			}
+			why := d.Reason
+			switch why {
+			case delegate.RefusedUnproven, delegate.RefusedSlow, delegate.RefusedUnreachable, delegate.RefusedTooBig, delegate.RefusedContext:
+			default:
+				why = "other"
+			}
+			s.RefusedWhy[why]++
 			continue
 		default:
 			s.Failed++
 			continue
 		}
-		tokens := d.Kept() / 4
+		kept := d.Kept()
 		s.Answered++
-		s.TokensKept += tokens
+		keptBytes += kept
 		model := shortModel(d.Model)
 		if model == "" {
-			model = "Model not recorded"
+			model = NotRecorded
 		}
-		add(byModel, model, tokens)
-		add(byTask, taskName(skills.TypePrefix+d.Skill)+" · "+sizeWords(true, d.Size), tokens)
+		add(byModel, model, kept)
+		add(byTask, taskName(skills.TypePrefix+d.Skill)+" · "+sizeWords(true, d.Size), kept)
 		if d.At.After(cutoff) {
 			recentTasks++
-			recentTokens += tokens
+			recentBytes += kept
 		}
 	}
+	s.TokensKept = keptBytes / 4
 	s.Worth = worth(s.TokensKept)
-	s.ByModel, s.ByTask = shares(byModel, worth), shares(byTask, worth)
+	s.ByModel, s.ByTask = shares(byModel, bytesOf, worth), shares(byTask, bytesOf, worth)
 
 	if recentTasks > 0 {
 		span := paceWindow
@@ -111,13 +130,16 @@ func savings(in Input, rows []card.Row) Savings {
 			span = max(days, paceFloor)
 		}
 		scale := float64(paceWindow) / float64(span)
-		tokens := int(float64(recentTokens) * scale)
+		tokens := int(float64(recentBytes/4) * scale)
 		s.Pace = &Estimate{Tasks: int(float64(recentTasks)*scale + 0.5), Tokens: tokens, Worth: worth(tokens), Days: span}
 	}
 
 	switch {
 	case !in.ReadsReady:
 		s.RoomStatus = "reading"
+	case in.ReadsErr != "":
+		s.RoomStatus = "error"
+		s.RoomError = "Couldn't read your Claude Code transcripts, so there's no estimate of what else could go local (" + in.ReadsErr + ")."
 	case in.ReadsDays > 0:
 		if room := roomToGrow(in.Reads, in.ReadsDays, rows); room != nil {
 			room.Worth = worth(room.Tokens)
@@ -128,9 +150,10 @@ func savings(in Input, rows []card.Row) Savings {
 	return s
 }
 
-func shares(m map[string]*Share, worth func(int) float64) []Share {
+func shares(m map[string]*Share, bytesOf map[*Share]int, worth func(int) float64) []Share {
 	out := []Share{}
 	for _, sh := range m {
+		sh.Tokens = bytesOf[sh] / 4
 		sh.Worth = worth(sh.Tokens)
 		out = append(out, *sh)
 	}
@@ -161,18 +184,18 @@ func roomToGrow(reads []history.ReadSample, days int, rows []card.Row) *Estimate
 	if largest < 0 {
 		return nil
 	}
-	var tasks, tokens int
+	var tasks, keptBytes int
 	for _, rd := range reads {
 		size := skills.SizeOfInput(rd.Lines, rd.Bytes)
 		if size == "" || sizeIndex(size) > largest {
 			continue
 		}
 		tasks++
-		tokens += delegate.Delegation{Outcome: "answered", Bytes: rd.Bytes}.Kept() / 4
+		keptBytes += delegate.Delegation{Outcome: "answered", Bytes: rd.Bytes}.Kept()
 	}
 	scale := float64(paceWindow) / float64(max(days, 1))
 	return &Estimate{
-		Tasks: int(float64(tasks)*scale + 0.5), Tokens: int(float64(tokens) * scale), Days: days,
+		Tasks: int(float64(tasks)*scale + 0.5), Tokens: int(float64(keptBytes/4) * scale), Days: days,
 		Sizes: "files " + sizeWords(true, skills.SizeOrder[largest]), Skills: strings.Join(names, ", "),
 	}
 }
@@ -184,12 +207,4 @@ func sizeIndex(size string) int {
 		}
 	}
 	return -1
-}
-
-// shortModel drops the publisher from a model id: "mlx-community/Qwen" is "Qwen".
-func shortModel(id string) string {
-	if _, short, ok := strings.Cut(id, "/"); ok && short != "" {
-		return short
-	}
-	return id
 }

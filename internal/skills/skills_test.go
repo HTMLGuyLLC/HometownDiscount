@@ -165,3 +165,26 @@ func TestTrickyDeclarations(t *testing.T) {
 		}
 	}
 }
+
+// Sizes and skills have one set of plain words, built from the same limits
+// the checks use.
+func TestSizeWordsAndNames(t *testing.T) {
+	for size, want := range map[string]string{Small: "up to 200 lines", Medium: "up to 1,000 lines", Large: "up to 4,000 lines", "": "any size", "huge": "any size"} {
+		if got := SizeWords(size); got != want {
+			t.Errorf("SizeWords(%q) = %q, want %q", size, got, want)
+		}
+	}
+	for _, s := range SizeOrder {
+		if got := SizeOf(SizeLines(s)); got != s {
+			t.Errorf("a %s input of its largest size is %q", s, got)
+		}
+	}
+	for _, s := range Order {
+		if Names[s] == "" {
+			t.Errorf("no plain name for %s", s)
+		}
+	}
+	if Commas(1234567) != "1,234,567" || Commas(12) != "12" {
+		t.Error("Commas")
+	}
+}

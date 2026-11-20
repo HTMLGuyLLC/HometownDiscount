@@ -11,9 +11,10 @@ build: ## Build ./bin/htd
 test: ## Run every test (sandbox canaries included)
 	go test ./...
 
-lint: ## Formatting and vet
+lint: ## Formatting, vet, and a syntax check of the page's scripts (if node is installed)
 	@test -z "$$(gofmt -l .)" || (gofmt -l . && false)
 	go vet ./...
+	@if command -v node >/dev/null 2>&1; then node --check internal/ui/web/app.js && node --check internal/ui/web/settings.js; fi
 
 install: build ## Install htd to /usr/local/bin
 	install -m 0755 bin/htd /usr/local/bin/htd
