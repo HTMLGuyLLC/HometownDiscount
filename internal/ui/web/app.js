@@ -249,7 +249,7 @@ function renderSavings(s) {
   } else if (s.room) {
     const r = s.room;
     est.push(card("Room to grow", r.worth ? `up to ${money(r.worth)} a month` : `up to ${n(r.tasks)} reads a month`, [
-      `Claude read about ${n(r.tasks)} ${plural(r.tasks, "file", "files")} a month (${r.sizes}), about ${n(r.tokens)} tokens. Your models go local for: ${r.skills}.`,
+      `Claude reads about ${n(r.tasks)} ${plural(r.tasks, "file", "files")} a month (${r.sizes}), about ${n(r.tokens)} tokens. Your models go local for: ${r.skills}.`,
       `A ceiling, not a promise: it counts every such read in the last ${r.days} days of transcripts as if it were one of those tasks. Most won't be.`,
     ], "ink"));
   } else {

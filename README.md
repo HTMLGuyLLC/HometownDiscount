@@ -4,39 +4,62 @@
 
 *Stop paying out-of-state fees for work your hometown can handle.* Your local models get the hometown rate; Claude is the out-of-state trip.
 
-> 🚧 **v0.3, an early preview.** It works end to end on macOS and Linux (see [Install](#install-and-set-up)). Expect rough edges.
+> 🚧 **v0.3, an early preview.** It works end to end on macOS and Linux (see [Install](#get-started)). Expect rough edges.
 
 Free and source-available ([license](#license)) · `htd` on the command line · $0 extra by default · your code goes only to the model servers you set up.
 
-## What it does
+## In 30 seconds
+
+- **A lot of what Claude Code does is simple:** find where a function is defined, read a value from a JSON file, list what a file declares.
+- **A local AI model on your computer can often do that work for free.** But you need proof it gets it right, on your code, fast enough.
+- **htd gets that proof.** It has your local model redo that kind of work on your own code, many times, and grades every answer. No AI judges another AI.
+- **Once a kind of task is proven, Claude hands it over.** Claude keeps everything else. Nothing goes local until it's earned.
 
 ![How it works in three steps: Claude does a task, like finding where a function is defined. Your local AI model redoes it on your computer, checked against the right answer. Once it's proven, your local model takes that kind of task over, saving Claude for the hard work.](docs/how-it-works.svg)
 
-- **`htd map`** shows where your Claude Code subagent spend goes, and what it would cost on cheaper models.
-- **`htd bench`** checks your local models on exact tasks built from your own repo (find where something is defined, find the lines that mention a word, list what a file declares, read a JSON value, find which files mention something), at growing file sizes.
-- **`htd replay`** has your local models redo past jobs Claude already finished, on the same code, and grades each answer against Claude's.
-- **`htd card`** shows what each model has earned: what it can take now, what it's accurate at but too slow for, what it hasn't proven yet, and what it isn't good enough for.
-- **`htd ui`** opens a page in your browser, on this computer only: what `ask_local` has saved and is likely to save, each model's results per task and file size, and a form for your settings.
-- **`htd mcp`** gives Claude an `ask_local` tool, so Claude can hand your local models the small work each has proven, and nothing else.
+## What it looks like
 
-Work goes local only when a model is **accurate and fast enough**: by default, at most 20% slower than Claude on the same kind and size of task. You can change that per task and size.
+Every local model gets a scorecard: one row per kind of task, one column per file size.
 
-Grading is mechanical (no AI judges another AI), so the same answer always gets the same grade. Everything runs on your own hardware and costs $0.
+![A scorecard for the qwen3.6-35b-a3b model: finding a definition in large files goes local (24 of 24 right, in half Claude's time); most other tasks are accurate but too slow so they stay with Claude, several are still learning, and finding matching lines in medium files is not good enough](docs/sample-qwen3.6-35b.png)
 
-## Works with your Claude subscription
+![A scorecard for the Qwen3.8-27B-4bit model: reading a JSON value and finding a definition in small files go local (24 of 24 right, faster than Claude); bigger files mostly stay with Claude or are still learning](docs/sample-qwen3.8-27b.png)
 
-- **No API key needed, and no Claude calls.** Replays and skill checks run only on your local models. Claude's past answers are read from files already on your disk.
-- **Your Claude login is never touched** and `ANTHROPIC_API_KEY` is never set.
-- **`ask_local` saves context:** when Claude hands a proven task to a local model, the file contents never enter Claude's window.
+Each box is one of four results:
 
-## Install and set up
+| Result | What it means |
+| --- | --- |
+| **Goes local** | Proven right and fast enough. Claude hands this work to your model. |
+| **Stays with Claude** | Right, but too slow (or you said never). Claude keeps doing it. |
+| **Learning** | Not enough checks yet to know. The note says when htd decides. |
+| **Not good enough** | Gets it wrong too often. Claude keeps it. |
 
-Download it for your Mac or Linux machine (it picks the right file for your computer):
+The two cards above are real: two models, same tasks, different strengths. That's why each model is judged on its own, per task and file size.
+
+## Get started
+
+**1. Install** (Mac or Linux; it picks the right file for your computer):
 
 ```bash
 curl -fsSL "https://github.com/HTMLGuyLLC/HometownDiscount/releases/latest/download/htd_$(uname -s | tr A-Z a-z)_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar -xz htd
 sudo mv htd /usr/local/bin/
 ```
+
+**2. Then run these, in order:**
+
+| Step | Command | Takes |
+| --- | --- | --- |
+| Set up: tell htd about your local models (a URL and model name) | `htd setup` | 1 minute |
+| Test your models on your code (run it inside a repo) | `htd bench` | minutes; a few hours for a big repo |
+| See the results | `htd ui` (a page in your browser) or `htd card` | instant |
+| Let Claude hand proven work to your models, in every project | `claude mcp add --scope user htd -- htd mcp` | once |
+
+That's it. Run `htd bench` again now and then (or in other repos) to prove more.
+
+**Optional:** `htd map` shows where your Claude Code subagent spend goes. `htd replay` has your models redo your real past Claude jobs overnight, as a second opinion.
+
+<details>
+<summary>Other ways to install, and what works with it</summary>
 
 Or pick a file on the [releases page](https://github.com/HTMLGuyLLC/HometownDiscount/releases). To check that a download was built from this repo by its release workflow, run `gh attestation verify <file>.tar.gz --repo HTMLGuyLLC/HometownDiscount` (or compare it with `SHA256SUMS`). If macOS blocks a file you downloaded in a browser, run `xattr -d com.apple.quarantine htd` once.
 
@@ -47,22 +70,80 @@ git clone https://github.com/HTMLGuyLLC/HometownDiscount && cd HometownDiscount
 go build -o htd ./cmd/htd && sudo mv htd /usr/local/bin/
 ```
 
-Then:
-
-| Step | Command | Takes |
-| --- | --- | --- |
-| 1. Setup wizard: spend map, your local models (URL + model name, any OpenAI-compatible server), then snapshots | `htd setup` | 1 minute |
-| 2. Where your subagent spend goes | `htd map` | seconds |
-| 3. Skill checks on your code (run inside a repo) | `htd bench` | minutes; a few hours for a big repo |
-| 4. Replays of your real past jobs | `htd replay` | minutes per job; run it overnight |
-| 5. What each model has earned | `htd card` (or `htd ui` for a page in your browser) | instant |
-| 6. Let Claude hand them proven work, in every project | `claude mcp add --scope user htd -- htd mcp` | once |
-
-**Local servers that work:** MTPLX, Splish/Splash, Ollama, LM Studio, llama.cpp, vLLM, or anything serving `/v1/chat/completions`. The wizard checks the real context window (it warns about Ollama's 4K default), speed and tool-call reliability. A server that isn't on your machine or local network is refused unless you say yes, because your code would go there.
+**Local servers that work:** MTPLX, Splish/Splash, Ollama, LM Studio, llama.cpp, vLLM, or anything serving `/v1/chat/completions`. The setup wizard checks the real context window (it warns about Ollama's 4K default), speed and tool-call reliability. A server that isn't on your machine or local network is refused unless you say yes, because your code would go there.
 
 **Platforms:** macOS (Apple Silicon or Intel) and Linux. Replays need a sandbox: built into macOS; on Linux install bubblewrap (`sudo apt install bubblewrap`). Windows has no download; built from source, only `htd map` works there.
 
+</details>
+
+## Works with your Claude subscription
+
+- **No API key needed, and no Claude calls.** Testing runs only on your local models. Claude's past answers are read from files already on your disk.
+- **Your Claude login is never touched** and `ANTHROPIC_API_KEY` is never set.
+- **It saves Claude's context:** when Claude hands a proven task to a local model (through the `ask_local` tool), the file contents never enter Claude's window.
+- **Free:** everything runs on your own hardware and costs $0.
+
+## The scorecard page
+
+```bash
+htd ui
+```
+
+![The Models tab: three totals, then a table per local model of task by file size, each result marked Goes local, Stays with Claude, Learning or Not good enough](docs/scorecard.png)
+
+A page in your browser, on this computer only, with three tabs:
+
+- **Savings:** what your local models have done for Claude so far: tasks, about how many tokens that kept out of Claude's context and what they were worth, by model and by task, why Claude kept the rest, and the latest handoffs. Plus two monthly estimates: **at your current pace** (your last 30 days) and **room to grow**, a ceiling that counts the files Claude read in your last 30 days at sizes your models have proven ([screenshot](docs/scorecard-savings.png)).
+- **Models:** the scorecards above, one per model. Click a result for its history: the share right after each check, the proof line against the bar, and its speed next to Claude's. Replayed jobs fold away underneath. An over-time chart shows how many task sizes go local by the end of each day.
+- **Settings:** a form for everything in `~/.htd/config.toml`, so you never have to edit the file: your local models, which model takes a task, speed limits, privacy and appearance ([screenshot](docs/scorecard-settings.png)). It shows the file it will write before you save, and checks it the same way htd does.
+
+<details>
+<summary>More about the page</summary>
+
+- It follows your computer's light or dark setting ([dark mode](docs/scorecard-dark.png)) unless you pick one under Settings.
+- It updates every 10 seconds, so you can leave it open while `htd bench` or `htd replay` runs.
+- If `config.toml` has a mistake, the page still opens and says which line.
+- Saving settings rewrites the file, so comments you added by hand aren't kept. If the file changed since you opened the page (a hand edit, or your AI assistant), it asks you to reload instead of overwriting that change. Changes reach `ask_local` on its next call, including removing a model. Allowing a server off your computer and network asks first.
+- It's served by `htd` itself on `127.0.0.1` (any free port, or `--port`), answers only requests addressed to this computer, and loads nothing from the internet. The address it opens carries a one-time key, so only the browser you opened it in can use the page. The only thing it can change is `config.toml`, and only from the page itself.
+- `--no-open` prints the address instead of opening your browser. Ctrl-C stops it.
+- It works in current Chrome, Edge, Firefox and Safari (2021 or newer).
+
+</details>
+
+## How it decides
+
+- **Goes local** only when a model is proven **right** and **fast enough**.
+- **Right** means it passed often enough, with enough checks, that it isn't luck: a 95% lower bound at or above the bar. Skill checks have exact answers and a bar of 85%. Replays are graded against the answer Claude wrote; their bar is a stated default (86%) for now.
+- **Fast enough** means at most 20% slower than Claude on the same kind and size of task, by default. You can change that per task and size (see [Speed limits](#configuration)).
+- **Grading is mechanical,** so the same answer always gets the same grade.
+- **Claude's side costs nothing:** for skill checks, htd times how long your Claude model took to answer after reading a file that size in your own transcripts (re-measured weekly, and whenever you switch models); for replays, it uses how long the original job took. Until there are at least 5 timings on both sides, accuracy alone decides.
+- **Not good enough** stops early, once a size clearly can't reach the bar. After 200 jobs without proof, the card shows a hint.
+- **Savings** are what the work handed off was worth at your Claude model's API prices: one cache write plus a cache read on each later turn the file would have ridden along for (typical for your transcripts). On a Pro or Max plan that's usage headroom, not dollars.
+
+Run `htd bench` again after changing your server or model settings.
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `htd setup` | First-run wizard: spend map, your local models, then snapshots |
+| `htd bench [--repo .] [--max 150] [--timeout 5m]` | Skill checks from a repo on each local model, easiest first; stops early when a size clearly can't pass |
+| `htd ui [--port N] [--no-open]` | The scorecard page: savings, each model's results, and a settings form; served only on 127.0.0.1 until Ctrl-C |
+| `htd card [--details]` | The same results in your terminal; `--details` shows every number |
+| `htd mcp` | MCP server with the `ask_local` tool, for Claude Code |
+| `htd map [--days 30] [--json]` | Spend map: jobs, cost and cheaper-model prices per job type |
+| `htd replay [--max 40] [--types find,review] [--days 30]` | Replay past jobs on each local model; resumable (done jobs are skipped) |
+| `htd probe [--url URL]` | Check a server (your first model's, by default): models, context, quant, speed, tool calls |
+| `htd gold [--fidelity N]` | How many past jobs can be replayed |
+| `htd regrade [--apply]` | Re-grade saved answers after an update, without re-running the model; `--apply` saves the new grades |
+| `htd hooks [on\|off]` | Snapshots: save your repo's uncommitted files each time Claude starts a subagent, so replays see what each job saw (a Claude Code hook) |
+| `htd forget [--all] [--yes]` | Delete what htd stored in `~/.htd` after asking (`--all` also deletes your settings and htd's hook) |
+
+`bench` and `replay` also take `--url`, `--model` and `--allow-remote` to run one model instead of every configured one (`--max` applies to each model). Every command takes `--help`.
+
 ## Configuration
+
+**Easiest:** run `htd ui` and use **Settings**. Or ask your AI assistant (see [below](#changing-settings-with-an-ai-assistant)). The rest of this section is the reference for the file.
 
 Settings live in `~/.htd/config.toml` (written by `htd setup`, readable only by you). Every default costs $0 extra.
 
@@ -105,8 +186,6 @@ claude_model = "auto"        # compare with the Claude model you used most in th
 
 Tasks: `json`, `lookup`, `lines`, `list`, `files` (skill checks) and `find`, `extract`, `classify`, `transform`, `review`, `research` (replays). Skill checks come in three sizes: `small` (up to 200 lines), `medium` (up to 1,000), `large` (up to 4,000). Replays are `small` or `large`, by tool calls compared with your usual for that type of job. A misspelled setting, task or size stops htd with a message instead of being ignored. `ask_local` picks up changes on its next call.
 
-Claude's side of the comparison costs nothing: for skill checks, htd times how long that Claude model took to answer after reading a file that size in your own transcripts (re-measured weekly, and whenever you switch models); for replays, it uses how long the original job took. Until there are at least 5 timings on both sides, accuracy alone decides.
-
 **Privacy and appearance.**
 
 ```toml
@@ -116,8 +195,6 @@ track_handoffs = true        # log each ask_local call (task, size, model, outco
 [ui]
 theme = "auto"               # the htd ui page: "auto" (follow your computer), "light" or "dark"
 ```
-
-You can change all of these in `htd ui` under Settings instead of editing the file.
 
 **Results are tied to the Claude model too.** A replay is graded against the answer one Claude model wrote, so replay results are kept per Claude model: the card shows "review jobs vs Opus 5.5" separately from "vs Sonnet 5", since matching one doesn't prove a match for the other. Skill checks have exact answers, so they don't depend on Claude.
 
@@ -133,57 +210,6 @@ There are three ways to change a setting; pick whichever suits you:
 
 htd checks the whole file every time it reads it. A misspelled setting, an unknown task or size, or a value it can't use stops the next command with a message saying what's wrong, so a bad edit, by hand or by an assistant, never gets silently ignored. `htd card` is a quick way to check.
 
-## Commands
-
-| Command | What it does |
-| --- | --- |
-| `htd setup` | First-run wizard: spend map, your local models, then snapshots |
-| `htd map [--days 30] [--json]` | Spend map: jobs, cost and cheaper-model prices per job type |
-| `htd bench [--repo .] [--max 150] [--timeout 5m]` | Skill checks from a repo on each local model, easiest first; stops early when a size clearly can't pass |
-| `htd replay [--max 40] [--types find,review] [--days 30]` | Replay past jobs on each local model; resumable (done jobs are skipped) |
-| `htd card [--details]` | What each model has earned; `--details` shows every number |
-| `htd ui [--port N] [--no-open]` | The scorecard page: savings, each model's results, and a settings form; served only on 127.0.0.1 until Ctrl-C |
-| `htd mcp` | MCP server with the `ask_local` tool |
-| `htd probe [--url URL]` | Check a server (your first model's, by default): models, context, quant, speed, tool calls |
-| `htd gold [--fidelity N]` | How many past jobs can be replayed |
-| `htd regrade [--apply]` | Re-grade saved answers after an update, without re-running the model; `--apply` saves the new grades |
-| `htd hooks [on\|off]` | Snapshots: save your repo's uncommitted files each time Claude starts a subagent, so replays see what each job saw (a Claude Code hook) |
-| `htd forget [--all] [--yes]` | Delete what htd stored in `~/.htd` after asking (`--all` also deletes your settings and htd's hook) |
-
-`bench` and `replay` also take `--url`, `--model` and `--allow-remote` to run one model instead of every configured one (`--max` applies to each model). Every command takes `--help`.
-
-**What's stored, all in `~/.htd`:** `config.toml`, `runs.jsonl` (one line per graded replay or check), `answers/` (each answer next to the expected one, for review by hand), `delegations.jsonl` (each `ask_local` call: skill, size, model, outcome and why Claude kept it; no file contents; turn it off with `[privacy] track_handoffs = false`), `cache/` (Claude's typical times, medians only; which models think before answering; temporary repo copies during replays), `snapshots/` (uncommitted files saved as subagents start, when snapshots are on; kept 60 days), and an empty `model.lock` that lets htd commands take turns. See [PRIVACY.md](PRIVACY.md).
-
-## Reading the card
-
-- **Goes local**: proven, meaning it passed often enough, with enough checks, that the result isn't luck (a 95% lower bound at or above the bar), and it's fast enough;
-- **Stays with Claude**: proven, but slower than your speed limit allows (or your setting says never), so Claude keeps it (`--details` shows how much slower);
-- **Learning**: not enough evidence either way yet;
-- **Not good enough**: stopped early, because it clearly can't reach the bar;
-- **hint**: 200 jobs without proof.
-
-The `ask_local` line counts tasks answered locally and the file contents kept out of Claude's context, with what that's worth at your Claude model's API prices: one cache write plus a cache read on each later turn the file would have ridden along for (typical for your transcripts). On a Pro or Max plan that's usage headroom, not dollars.
-
-Skill checks have exact answers and a fixed bar of 85%. Replay results are a first look: their bar is a stated default (86%) for now. Run `htd bench` again after changing your server or model settings.
-
-## The scorecard page
-
-```bash
-htd ui
-```
-
-![The Models tab: three totals, then a table per local model of task by file size, each result marked Goes local, Stays with Claude, Learning or Not good enough](docs/scorecard.png)
-
-`htd ui` opens a page in your browser, on this computer only, with three tabs:
-
-- **Savings:** what `ask_local` handed to your local models: tasks, about how many tokens that kept out of Claude's context and what they were worth, by model and by task, why Claude kept the rest, and the latest handoffs. Two monthly estimates: **at your current pace** (your last 30 days of handoffs) and **room to grow**, a ceiling that counts the files Claude read in your last 30 days of transcripts at sizes your models have proven ([screenshot](docs/scorecard-savings.png)).
-- **Models:** everything `htd card` knows, judged the same way and in the same words. A table per model of each skill check by file size, marked **Goes local** (accurate and fast enough), **Stays with Claude** (accurate, but too slow for your speed limit, or your setting), **Learning** (with the check-in it's heading for) or **Not good enough**. Replayed jobs fold away underneath. Click a result for its history: the share right after each check, the proof line against the bar, and its speed next to Claude's. An over-time chart shows the task sizes that go local by the end of each day.
-- **Settings:** a form for everything in `~/.htd/config.toml`: your local models, which model takes a task, speed limits, privacy and appearance ([screenshot](docs/scorecard-settings.png)). It shows the file it will write before you save, checks it the same way htd does when it reads it, and asks before allowing a server off your computer and network. Saving rewrites the file, so comments you added by hand aren't kept. If the file changed since you opened the page (a hand edit, or your AI assistant), it asks you to reload instead of overwriting that change. Changes reach `ask_local` on its next call, including removing a model.
-
-It follows your computer's light or dark setting ([dark mode](docs/scorecard-dark.png)) unless you pick one under Settings. It updates every 10 seconds, so you can leave it open while `htd bench` or `htd replay` runs. If `config.toml` has a mistake, the page still opens and says which line.
-
-The page is served by `htd` itself on `127.0.0.1` (any free port, or `--port`), answers only requests addressed to this computer, and loads nothing from the internet. The address it opens carries a one-time key, so only the browser you opened it in can use the page. The only thing it can change is `config.toml`, and only from the page itself. `--no-open` prints the address instead of opening your browser. Ctrl-C stops it. It works in current Chrome, Edge, Firefox and Safari (2021 or newer).
-
 ## Good to know
 
 - **Big jobs fail, small work passes.** Common for local models: whole subagent jobs can be too big, while bounded pieces (lookups, lists, scans) are well within reach. That's what skill checks and `ask_local` are for.
@@ -194,6 +220,7 @@ The page is served by `htd` itself on `127.0.0.1` (any free port, or `--port`), 
 - **Low memory pauses a run.** Before each job or check, `htd replay` and `htd bench` check your machine's memory; when it's low they wait up to 10 minutes for it to recover, then stop (finished work is kept). A local model server that grows with use is the usual cause: restart it or lower its memory limit.
 - **Two htd commands at once** take turns on your local models, one request at a time. An `ask_local` call from Claude goes first; if the model stays busy, Claude is told so and does the task itself.
 - **Cloud models served through a local URL** (e.g. Ollama `:cloud`) are refused: they aren't local.
+- **What's stored, all in `~/.htd`:** `config.toml`, `runs.jsonl` (one line per graded replay or check), `answers/` (each answer next to the expected one, for review by hand), `delegations.jsonl` (each `ask_local` call: skill, size, model, outcome and why Claude kept it; no file contents; turn it off with `[privacy] track_handoffs = false`), `cache/` (Claude's typical times, medians only; which models think before answering; temporary repo copies during replays), `snapshots/` (uncommitted files saved as subagents start, when snapshots are on; kept 60 days), and an empty `model.lock` that lets htd commands take turns. See [PRIVACY.md](PRIVACY.md).
 
 ## Links
 
