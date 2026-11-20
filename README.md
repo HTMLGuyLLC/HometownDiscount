@@ -4,7 +4,7 @@
 
 *Stop paying out-of-state fees for work your hometown can handle.* Your local models get the hometown rate; Claude is the out-of-state trip.
 
-> 🚧 **v0.2, an early preview.** It works end to end on macOS and Linux (see [Install](#install-and-set-up)). Expect rough edges.
+> 🚧 **v0.3, an early preview.** It works end to end on macOS and Linux (see [Install](#install-and-set-up)). Expect rough edges.
 
 Free and source-available ([license](#license)) · `htd` on the command line · $0 extra by default · your code goes only to the model servers you set up.
 

@@ -18,7 +18,7 @@ import (
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
-var version = "0.2.1"
+var version = "0.3.0"
 
 const usage = `htd: Hometown Discount
 
