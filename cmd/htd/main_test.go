@@ -54,7 +54,7 @@ func TestUnknownCommand(t *testing.T) {
 func TestHelpRunsNothing(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HTD_HOME", dir)
-	for _, cmd := range []string{"setup", "mcp", "map", "bench", "replay", "card", "probe", "gold", "regrade", "forget"} {
+	for _, cmd := range []string{"setup", "mcp", "map", "bench", "replay", "card", "ui", "probe", "gold", "regrade", "forget"} {
 		var out bytes.Buffer
 		if err := run([]string{cmd, "--help"}, &out, &out); !errors.Is(err, flag.ErrHelp) {
 			t.Errorf("%s --help: err = %v, want flag.ErrHelp (main exits quietly on it)", cmd, err)

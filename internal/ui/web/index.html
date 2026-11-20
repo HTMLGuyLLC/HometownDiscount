@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Hometown Discount Scorecard</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div>
+      <div class="brand"><img class="logo" src="favicon.svg" alt="">Hometown Discount</div>
+      <h1>What your local models have earned</h1>
+    </div>
+    <div class="live" id="live" aria-live="polite">Loading…</div>
+  </header>
+
+  <nav class="tabs" role="tablist" aria-label="Sections">
+    <button role="tab" id="tab-savings" aria-controls="panel-savings" data-tab="savings">Savings</button>
+    <button role="tab" id="tab-models" aria-controls="panel-models" data-tab="models">Models</button>
+    <button role="tab" id="tab-settings" aria-controls="panel-settings" data-tab="settings">Settings</button>
+  </nav>
+
+  <div id="error" class="error" hidden></div>
+
+  <!-- Savings: what went local, and what it's likely to be worth -->
+  <section id="panel-savings" role="tabpanel" aria-labelledby="tab-savings" hidden>
+    <p class="lede">What <code>ask_local</code> handed to your local models instead of Claude, what that saved, and what it's likely to save from here.</p>
+    <div id="tracking-off" class="notice" hidden>
+      <b>Handoff tracking is off.</b> htd isn't logging <code>ask_local</code> calls, so nothing new shows here. <button class="link" type="button" data-goto="settings">Turn it on in Settings</button>
+    </div>
+    <div id="savings-empty" class="panel empty" hidden>
+      <h2>No handoffs yet</h2>
+      <p>Once a model has proven a task (Models tab) and <code>ask_local</code> is added to Claude Code, Claude hands it those tasks and they show up here:</p>
+      <pre><code>claude mcp add --scope user htd -- htd mcp</code></pre>
+    </div>
+    <div id="savings-totals" class="totals"></div>
+    <div id="estimates-wrap" hidden>
+      <h2 class="section">Estimated, per month</h2>
+      <div id="estimates" class="cards"></div>
+    </div>
+    <div id="shares-wrap" hidden>
+      <h2 class="section">Where it went</h2>
+      <div class="cards two">
+        <div class="panel"><h3>By model</h3><div class="scroll"><table class="plain"><thead><tr><th>Model</th><th>Tasks</th><th>Tokens kept</th><th>Worth</th></tr></thead><tbody id="by-model"></tbody></table></div></div>
+        <div class="panel"><h3>By task</h3><div class="scroll"><table class="plain"><thead><tr><th>Task</th><th>Tasks</th><th>Tokens kept</th><th>Worth</th></tr></thead><tbody id="by-task"></tbody></table></div></div>
+      </div>
+    </div>
+    <section id="handoffs" hidden>
+      <h2 class="section">Recent handoffs</h2>
+      <div class="panel scroll"><table class="plain"><thead><tr><th>When</th><th>Task</th><th>Size</th><th>Model</th><th>Took</th><th>Result</th></tr></thead><tbody id="handoff-rows"></tbody></table></div>
+    </section>
+  </section>
+
+  <!-- Models: how each local model is doing -->
+  <section id="panel-models" role="tabpanel" aria-labelledby="tab-models" hidden>
+    <p class="lede">Your local models redo work Claude already did, are graded against the right answer, and are timed against Claude. Work goes local only when a model is accurate and fast enough.</p>
+    <div id="empty" class="panel empty" hidden>
+      <h2>Nothing tested yet</h2>
+      <p>Run <code>htd bench</code> in a repo (minutes), then <code>htd replay</code> (overnight). Results show up here as they're graded.</p>
+    </div>
+    <div id="totals" class="totals"></div>
+    <details class="howto">
+      <summary>How to read this</summary>
+      <dl>
+        <dt><em class="pill local">Goes local</em></dt><dd>Accurate, and fast enough for your speed limit. <code>ask_local</code> can hand it over.</dd>
+        <dt><em class="pill slow">Stays with Claude</em></dt><dd>Accurate, but slower than your limit allows.</dd>
+        <dt><em class="pill learning">Learning</em></dt><dd>Not enough checks yet to be sure either way.</dd>
+        <dt><em class="pill no">Not good enough</em></dt><dd>Too many wrong answers to reach the bar.</dd>
+      </dl>
+      <p>Skill checks are exact questions built from your own code, at three file sizes. Replayed jobs are your past Claude jobs, redone locally and graded against Claude's answer. Click any result for its history.</p>
+    </details>
+    <div id="models-wrap" hidden>
+      <h2 class="section">By model</h2>
+      <div id="models"></div>
+    </div>
+    <section id="over-time" hidden>
+      <h2 class="section">Over time</h2>
+      <div class="panel">
+        <div id="chart"></div>
+        <div id="chart-legend" class="legend"></div>
+        <p class="hint">Task sizes that go local by the end of each day, judged with your current speed settings. Bars show checks graded that day.</p>
+      </div>
+    </section>
+  </section>
+
+  <!-- Settings: a form that writes config.toml -->
+  <section id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
+    <p class="lede">These settings are saved to <code id="config-path">~/.htd/config.toml</code>. htd commands and <code>ask_local</code> pick up changes on their next run or call.</p>
+    <div id="settings-problem" class="notice warn" hidden></div>
+    <form id="settings" novalidate autocomplete="off"></form>
+    <details class="howto file">
+      <summary>See the file this saves</summary>
+      <pre id="toml-preview"></pre>
+    </details>
+    <div class="savebar" id="savebar">
+      <span id="save-status" class="save-status" aria-live="polite"></span>
+      <button type="button" id="revert" class="btn">Undo changes</button>
+      <button type="button" id="save" class="btn primary">Save settings</button>
+    </div>
+  </section>
+
+  <p class="note">Read from ~/.htd on this computer. Nothing is sent anywhere. Stop it with Ctrl-C in the terminal.</p>
+</div>
+<script src="app.js"></script>
+<script src="settings.js"></script>
+</body>
+</html>

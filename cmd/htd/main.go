@@ -32,6 +32,7 @@ Usage:
   htd mcp                            MCP server: Claude hands proven small tasks to your local models
                                      (claude mcp add --scope user htd -- htd mcp)
   htd card                           What each local model has earned: proven, learning or not good enough
+  htd ui                             The same, as a page in your browser: per task and size, and over time
   htd hooks [on|off]                 Snapshots: save uncommitted files as subagents start, so replays see what each job saw
   htd forget [--all]                 Delete what htd stored in ~/.htd (--all also deletes your settings)
   htd version                        Print the version
@@ -76,6 +77,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runRegrade(args[1:], stdout, stderr)
 	case "card":
 		return runCard(args[1:], stdout, stderr)
+	case "ui":
+		return runUI(args[1:], stdout, stderr)
 	case "hooks":
 		return runHooks(args[1:], stdout, stderr)
 	case "snapshot":

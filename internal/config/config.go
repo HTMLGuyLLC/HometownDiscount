@@ -54,16 +54,36 @@ type Pick struct {
 
 // Config is the whole file.
 type Config struct {
-	Local []Local `toml:"local"`
-	Pick  Pick    `toml:"pick"`
-	Speed Speed   `toml:"speed"`
+	Local   []Local `toml:"local"`
+	Pick    Pick    `toml:"pick"`
+	Speed   Speed   `toml:"speed"`
+	UI      UI      `toml:"ui"`
+	Privacy Privacy `toml:"privacy"`
 }
+
+// Privacy is what htd keeps about its own use. TrackHandoffs logs each
+// ask_local call (task, size, model, outcome; never file contents) to
+// ~/.htd/delegations.jsonl, which the savings report is built from.
+type Privacy struct {
+	TrackHandoffs bool `toml:"track_handoffs"`
+}
+
+// UI is how the scorecard page (`htd ui`) looks. Theme is "auto" (follow
+// the computer's light or dark setting), "light" or "dark".
+type UI struct {
+	Theme string `toml:"theme"`
+}
+
+// Themes are the values [ui] theme accepts.
+var Themes = []string{"auto", "light", "dark"}
 
 // Default is what a fresh install uses.
 func Default() Config {
 	return Config{
-		Pick:  Pick{Prefer: "fastest"},
-		Speed: Speed{MaxSlower: 20, ClaudeModel: "auto"},
+		Pick:    Pick{Prefer: "fastest"},
+		Speed:   Speed{MaxSlower: 20, ClaudeModel: "auto"},
+		UI:      UI{Theme: "auto"},
+		Privacy: Privacy{TrackHandoffs: true},
 	}
 }
 
@@ -76,14 +96,24 @@ func Path(dir string) string { return filepath.Join(dir, "config.toml") }
 
 // Load reads the config in dir, or returns the defaults when there's none.
 func Load(dir string) (Config, error) {
-	c := Default()
 	b, err := os.ReadFile(Path(dir))
 	if errors.Is(err, fs.ErrNotExist) {
-		return c, nil
+		return Default(), nil
 	}
 	if err != nil {
-		return c, err
+		return Default(), err
 	}
+	c, err := Parse(b)
+	if err != nil {
+		return c, fmt.Errorf("%s: %w", Path(dir), err)
+	}
+	return c, nil
+}
+
+// Parse reads a config file's contents over the defaults, and checks it
+// the way Load does: a misspelled or unusable setting is an error.
+func Parse(b []byte) (Config, error) {
+	c := Default()
 	md, err := toml.Decode(string(b), &c)
 	if err != nil {
 		return c, err
@@ -91,17 +121,23 @@ func Load(dir string) (Config, error) {
 	// A misspelled setting would otherwise be ignored without a word.
 	for _, k := range md.Undecoded() {
 		if !isRetired(k.String()) {
-			return c, fmt.Errorf("%s: unknown setting %q", Path(dir), k.String())
+			return c, fmt.Errorf("unknown setting %q", k.String())
 		}
 	}
 	if err := c.Speed.check(); err != nil {
-		return c, fmt.Errorf("%s: %w", Path(dir), err)
+		return c, err
 	}
 	if c.Pick.Prefer == "" {
 		c.Pick.Prefer = "fastest"
 	}
 	if err := c.Pick.check(c.Local); err != nil {
-		return c, fmt.Errorf("%s: %w", Path(dir), err)
+		return c, err
+	}
+	if c.UI.Theme == "" {
+		c.UI.Theme = "auto"
+	}
+	if !contains(Themes, c.UI.Theme) {
+		return c, fmt.Errorf(`[ui] theme = %q: use "auto", "light" or "dark"`, c.UI.Theme)
 	}
 	for i := range c.Local {
 		if c.Local[i].Loop == "" {
@@ -114,18 +150,27 @@ func Load(dir string) (Config, error) {
 	return c, nil
 }
 
+// Encode is the config file's contents, as Save writes them.
+func Encode(c Config) ([]byte, error) {
+	var buf bytes.Buffer
+	buf.WriteString("# Hometown Discount settings. Every default costs $0 extra.\n\n")
+	if err := toml.NewEncoder(&buf).Encode(c); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
 // Save writes the config to dir, readable only by the user.
 func Save(dir string, c Config) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	var buf bytes.Buffer
-	buf.WriteString("# Hometown Discount settings. Every default costs $0 extra.\n\n")
-	if err := toml.NewEncoder(&buf).Encode(c); err != nil {
+	b, err := Encode(c)
+	if err != nil {
 		return err
 	}
 	tmp := Path(dir) + ".tmp"
-	if err := os.WriteFile(tmp, buf.Bytes(), 0o600); err != nil {
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, Path(dir))

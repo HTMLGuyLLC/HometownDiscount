@@ -40,7 +40,11 @@ func runMCP(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return err
 	}
 	h := &refreshing{st: st, cfg: cfg, dir: dir, h: &delegate.Handler{Root: root, Label: "no local model set up"}}
-	h.h.Log = func(d delegate.Delegation) { st.LogJSON("delegations.jsonl", d) }
+	h.h.Log = func(d delegate.Delegation) {
+		if h.cfg.Privacy.TrackHandoffs { // [privacy] track_handoffs = false keeps no log
+			st.LogJSON(delegate.LogName, d)
+		}
+	}
 	home, _ := os.UserHomeDir()
 	switch {
 	case unsafeRoot(root, home) != "":
@@ -144,11 +148,11 @@ func (r *refreshing) refresh() {
 	if (len(r.rungIDs) == 0 || r.missing > 0) && len(r.cfg.Local) > 0 && !r.tried.IsZero() && time.Since(r.tried) > 30*time.Second {
 		r.connect()
 	}
+	if c, err := config.Load(r.dir); err == nil {
+		r.cfg.Speed, r.cfg.Pick, r.cfg.Privacy = c.Speed, c.Pick, c.Privacy // a bad edit keeps the last good settings
+	}
 	if len(r.rungIDs) == 0 {
 		return
-	}
-	if c, err := config.Load(r.dir); err == nil {
-		r.cfg.Speed, r.cfg.Pick = c.Speed, c.Pick // a bad edit keeps the last good settings
 	}
 	claude, _ := speed.Load(r.dir) // none yet: speed isn't compared, proof decides
 	if runs, err := r.st.All(); err == nil {

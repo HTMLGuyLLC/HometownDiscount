@@ -201,8 +201,11 @@ type Delegation struct {
 	At    time.Time `json:"at"`
 	Skill string    `json:"skill"`
 	Size  string    `json:"size"`
-	Lines int       `json:"lines"`
-	Bytes int       `json:"bytes"` // file bytes kept out of Claude's context
+	// Model is the local model that took it; "" when refused, or for calls
+	// logged before models were.
+	Model string `json:"model,omitempty"`
+	Lines int    `json:"lines"`
+	Bytes int    `json:"bytes"` // file bytes kept out of Claude's context
 	// AnswerBytes is what reached Claude instead: the answer with its note.
 	AnswerBytes int     `json:"answer_bytes,omitempty"`
 	Seconds     float64 `json:"seconds"`
@@ -312,6 +315,7 @@ func (h *Handler) Call(ctx context.Context, name string, raw json.RawMessage) mc
 		return refuse(fmt.Sprintf("%q at %d lines isn't proven for %s (it takes: %s).", a.Skill, lines, h.Label, takes))
 	}
 
+	d.Model = route.model
 	m, ok := h.Models[route.Rung]
 	if !ok {
 		return refuse(fmt.Sprintf("the local model proven for %q (%s) isn't reachable right now.", a.Skill, route.model))

@@ -309,8 +309,32 @@ func TestMCPAnswersAProvenSkill(t *testing.T) {
 		}
 	}
 	logged := delegations(t, home)
-	if len(logged) != 1 || logged[0]["outcome"] != "answered" || logged[0]["size"] != "small" || logged[0]["lines"] != 3.0 || logged[0]["bytes"] != 30.0 {
-		t.Errorf("the answered call should be logged with its size: %v", logged)
+	if len(logged) != 1 || logged[0]["outcome"] != "answered" || logged[0]["size"] != "small" || logged[0]["lines"] != 3.0 || logged[0]["bytes"] != 30.0 || logged[0]["model"] != "tiny-q4" {
+		t.Errorf("the answered call should be logged with its size and model: %v", logged)
+	}
+}
+
+// [privacy] track_handoffs = false: calls are still answered, but nothing
+// is logged. The setting applies without restarting the server.
+func TestMCPTrackingOff(t *testing.T) {
+	home, _ := hermetic(t)
+	mcpProject(t)
+	srv := newFakeServer(t, modelList("tiny-q4"), func(int, chatRequest) fakeReply {
+		return fakeReply{Content: "Charge is defined on line 3.", Tokens: 8}
+	})
+	proveLookup(t, home, configureLocal(t, home, srv, "tiny-q4"))
+	s := startMCP(t)
+	cfg, _ := config.Load(home)
+	cfg.Privacy.TrackHandoffs = false
+	if err := config.Save(home, cfg); err != nil {
+		t.Fatal(err)
+	}
+	text, isErr := s.askLocal(map[string]any{"task": "On which line is Charge defined?", "files": []string{"app.go"}, "skill": "lookup"})
+	if isErr || !strings.Contains(text, "Charge is defined on line 3.") {
+		t.Errorf("got %q (error %v)", text, isErr)
+	}
+	if exists(filepath.Join(home, "delegations.jsonl")) {
+		t.Errorf("tracking off, but a log was written: %s", readFile(t, filepath.Join(home, "delegations.jsonl")))
 	}
 }
 

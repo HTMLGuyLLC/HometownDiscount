@@ -143,3 +143,52 @@ prefer = "listed"
 		}
 	}
 }
+
+// [ui] theme picks the scorecard page's look; anything else stops htd.
+func TestUITheme(t *testing.T) {
+	dir := t.TempDir()
+	if c, err := Load(dir); err != nil || c.UI.Theme != "auto" {
+		t.Fatalf("default theme = %q, %v", c.UI.Theme, err)
+	}
+	for _, theme := range Themes {
+		os.WriteFile(Path(dir), []byte("[ui]\ntheme = \""+theme+"\"\n"), 0o600)
+		if c, err := Load(dir); err != nil || c.UI.Theme != theme {
+			t.Errorf("theme %q: got %q, %v", theme, c.UI.Theme, err)
+		}
+	}
+	os.WriteFile(Path(dir), []byte("[ui]\ntheme = \"neon\"\n"), 0o600)
+	if _, err := Load(dir); err == nil || !strings.Contains(err.Error(), `use "auto", "light" or "dark"`) {
+		t.Errorf("a bad theme: %v", err)
+	}
+}
+
+// Handoff tracking is on unless the file turns it off.
+func TestPrivacy(t *testing.T) {
+	dir := t.TempDir()
+	if c, _ := Load(dir); !c.Privacy.TrackHandoffs {
+		t.Error("tracking should be on by default")
+	}
+	os.WriteFile(Path(dir), []byte("[privacy]\ntrack_handoffs = false\n"), 0o600)
+	if c, err := Load(dir); err != nil || c.Privacy.TrackHandoffs {
+		t.Errorf("track_handoffs = false: %+v, %v", c.Privacy, err)
+	}
+}
+
+// What Encode writes, Parse reads back the same; Parse rejects what Load would.
+func TestEncodeParse(t *testing.T) {
+	c := Default()
+	c.Local = []Local{{URL: "http://127.0.0.1:8000", Model: "m", Quant: "auto", Loop: "builtin"}}
+	c.Speed.ByTask = map[string]any{"lookup:small": 5.0, "files": "never"}
+	c.UI.Theme = "dark"
+	b, err := Encode(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Parse(b)
+	if err != nil || got.UI.Theme != "dark" || got.Speed.ByTask["files"] != "never" || len(got.Local) != 1 {
+		t.Errorf("round trip: %+v, %v\n%s", got, err, b)
+	}
+	if _, err := Parse([]byte("[speed.by_task]\nlookup = \"sometimes\"\n")); err == nil {
+		t.Error("a bad by_task value should fail to parse")
+	}
+}
